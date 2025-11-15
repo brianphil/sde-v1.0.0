@@ -10,6 +10,8 @@ try:
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
+    torch = None  # Define torch as None for graceful fallback
+    nn = None  # Define nn as None for graceful fallback
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +182,7 @@ class NeuralNetworkTDLearner:
     Handles forward passes, loss computation, and parameter updates.
     """
 
-    def __init__(self, network: Optional[nn.Module] = None, learning_rate: float = 0.01):
+    def __init__(self, network: Optional["nn.Module"] = None, learning_rate: float = 0.01):
         """Initialize NN TD learner.
         
         Args:
@@ -202,9 +204,9 @@ class NeuralNetworkTDLearner:
 
     def td_learning_step_nn(
         self,
-        state_features: torch.Tensor,
+        state_features: "torch.Tensor",
         reward: float,
-        next_state_features: torch.Tensor,
+        next_state_features: "torch.Tensor",
         terminal: bool = False,
     ) -> Tuple[float, float]:
         """Execute TD learning step with neural network.
@@ -249,10 +251,10 @@ class NeuralNetworkTDLearner:
 
     def batch_td_learning(
         self,
-        states: torch.Tensor,
-        rewards: torch.Tensor,
-        next_states: torch.Tensor,
-        terminals: torch.Tensor,
+        states: "torch.Tensor",
+        rewards: "torch.Tensor",
+        next_states: "torch.Tensor",
+        terminals: "torch.Tensor",
     ) -> float:
         """Batch TD learning (more efficient).
         
