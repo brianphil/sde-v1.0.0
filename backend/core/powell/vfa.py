@@ -16,7 +16,7 @@ except ImportError:
     torch = None  # Define torch as None for graceful fallback
     logger = logging.getLogger(__name__)
     logger.warning("PyTorch not available - VFA will use fallback implementation")
-
+from torch import Tensor
 from ..models.state import SystemState
 from ..models.domain import Order, Vehicle, Route
 from ..models.decision import PolicyDecision, DecisionContext, DecisionType, ActionType
@@ -49,7 +49,7 @@ class ValueNetwork(nn.Module if TORCH_AVAILABLE else object):
 
         self.relu = nn.ReLU()
 
-    def forward(self, state_features: "torch.Tensor") -> "torch.Tensor":
+    def forward(self, state_features: "Tensor") -> "Tensor":
         """Compute value estimate for state features."""
         x = self.relu(self.fc1(state_features))
         x = self.relu(self.fc2(x))

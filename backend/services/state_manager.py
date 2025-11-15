@@ -170,12 +170,18 @@ class StateManager:
         self, state: SystemState, event_data: Dict[str, Any]
     ) -> SystemState:
         """Handle route execution started event."""
+        from backend.core.models.domain import RouteStatus
+
         route_id = event_data["route_id"]
 
         new_routes = state.active_routes.copy()
         if route_id in new_routes:
             old_route = new_routes[route_id]
-            new_route = replace(old_route, started_at=datetime.now())
+            new_route = replace(
+                old_route,
+                status=RouteStatus.IN_PROGRESS,
+                started_at=datetime.now()
+            )
             new_routes[route_id] = new_route
 
         return state.clone_with_updates(active_routes=new_routes)
@@ -184,6 +190,8 @@ class StateManager:
         self, state: SystemState, event_data: Dict[str, Any]
     ) -> SystemState:
         """Handle route completion event."""
+        from backend.core.models.domain import RouteStatus
+
         route_id = event_data["route_id"]
 
         new_routes = state.active_routes.copy()
@@ -191,7 +199,11 @@ class StateManager:
 
         if route_id in new_routes:
             route = new_routes.pop(route_id)
-            route = replace(route, completed_at=datetime.now())
+            route = replace(
+                route,
+                status=RouteStatus.COMPLETED,
+                completed_at=datetime.now()
+            )
             completed_routes[route_id] = route
 
         return state.clone_with_updates(

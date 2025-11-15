@@ -16,6 +16,11 @@ from ..models.domain import (
     DestinationCity,
 )
 from ..models.decision import PolicyDecision, DecisionContext, DecisionType, ActionType
+from .consolidation_rules import (
+    ConsolidationConstraints,
+    ConsolidationValidator,
+    get_consolidation_opportunities,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +65,8 @@ class CostFunctionApproximation:
     CFA minimizes: fuel_cost + time_cost + delay_penalty
     Subject to:
     - Vehicle capacity constraints
+    - Minimum utilization constraints
+    - Cargo compatibility constraints
     - Time window constraints
     - Hard constraints (e.g., Eastleigh 8:30-9:45)
     - Multi-city sequencing rules
@@ -67,9 +74,15 @@ class CostFunctionApproximation:
     Uses iterative greedy optimization with local improvements.
     """
 
-    def __init__(self, parameters: Optional[CostParameters] = None):
-        """Initialize CFA with cost parameters."""
+    def __init__(
+        self,
+        parameters: Optional[CostParameters] = None,
+        consolidation_constraints: Optional[ConsolidationConstraints] = None,
+    ):
+        """Initialize CFA with cost parameters and consolidation rules."""
         self.params = parameters or CostParameters()
+        self.consolidation_constraints = consolidation_constraints or ConsolidationConstraints()
+        self.validator = ConsolidationValidator(self.consolidation_constraints)
         self._initialize_distance_matrix()
 
     def _initialize_distance_matrix(self):
@@ -142,29 +155,34 @@ class CostFunctionApproximation:
     def _generate_candidate_solutions(
         self, state: SystemState, context: DecisionContext
     ) -> List[List[Route]]:
-        """Generate multiple candidate route solutions."""
+        """Generate multiple candidate route solutions with consolidation intelligence."""
         solutions = []
 
-        # Solution 1: Group by destination city (simplest)
-        by_city = self._group_orders_by_destination_city(context.orders_to_consider)
-        sol1 = self._assign_orders_to_vehicles(
-            state, by_city, context.vehicles_available
-        )
+        # Solution 1: Intelligent consolidation using business rules
+        sol1 = self._consolidation_aware_assignment(state, context)
         if sol1:
             solutions.append(sol1)
 
-        # Solution 2: Group by priority (urgent first)
-        by_priority = self._group_orders_by_priority(context.orders_to_consider)
+        # Solution 2: Group by destination city (simplest)
+        by_city = self._group_orders_by_destination_city(context.orders_to_consider)
         sol2 = self._assign_orders_to_vehicles(
-            state, by_priority, context.vehicles_available
+            state, by_city, context.vehicles_available
         )
         if sol2:
             solutions.append(sol2)
 
-        # Solution 3: Greedy nearest-first (minimize distance)
-        sol3 = self._greedy_nearest_first_assignment(state, context)
+        # Solution 3: Group by priority (urgent first)
+        by_priority = self._group_orders_by_priority(context.orders_to_consider)
+        sol3 = self._assign_orders_to_vehicles(
+            state, by_priority, context.vehicles_available
+        )
         if sol3:
             solutions.append(sol3)
+
+        # Solution 4: Greedy nearest-first (minimize distance)
+        sol4 = self._greedy_nearest_first_assignment(state, context)
+        if sol4:
+            solutions.append(sol4)
 
         return solutions
 
@@ -234,6 +252,91 @@ class CostFunctionApproximation:
                 route = self._create_route_for_orders(state, [order], vehicle)
                 routes.append(route)
                 assigned_vehicles.add(vehicle.vehicle_id)
+
+        return routes if routes else None
+
+    def _consolidation_aware_assignment(
+        self, state: SystemState, context: DecisionContext
+    ) -> Optional[List[Route]]:
+        """Intelligent consolidation using business rules and utilization constraints."""
+        routes = []
+        assigned_orders = set()
+
+        # Step 1: Identify consolidation opportunities
+        consolidation_groups = get_consolidation_opportunities(
+            context.orders_to_consider,
+            self.consolidation_constraints
+        )
+
+        logger.info(f"Found {len(consolidation_groups)} consolidation groups")
+
+        # Step 2: For each group, find optimal vehicle and create route
+        for group_key, order_ids in consolidation_groups.items():
+            if any(oid in assigned_orders for oid in order_ids):
+                continue  # Skip if orders already assigned
+
+            group_orders = [context.orders_to_consider[oid] for oid in order_ids if oid in context.orders_to_consider]
+
+            if not group_orders:
+                continue
+
+            # Calculate total load
+            total_weight = sum(o.weight_tonnes for o in group_orders)
+            total_volume = sum(o.volume_m3 for o in group_orders)
+
+            # Find optimal vehicle for this load
+            vehicle = self.validator.get_optimal_vehicle_for_load(
+                total_weight,
+                total_volume,
+                list(context.vehicles_available.values())
+            )
+
+            if not vehicle:
+                logger.debug(f"No suitable vehicle found for group {group_key} ({total_weight:.1f}T, {total_volume:.1f}m³)")
+                continue
+
+            # Create route
+            route = self._create_route_for_orders(state, group_orders, vehicle)
+
+            # Validate route against consolidation rules
+            is_valid, violations, reasoning = self.validator.validate_route(
+                route, vehicle, context.orders_to_consider
+            )
+
+            if is_valid:
+                routes.append(route)
+                assigned_orders.update(order_ids)
+                logger.info(f"✅ Created consolidated route {route.route_id} with {len(group_orders)} orders on {vehicle.vehicle_type} truck")
+            else:
+                logger.debug(f"Route validation failed for group {group_key}: {reasoning}")
+
+        # Step 3: Handle remaining orders (not consolidated)
+        remaining_orders = {
+            oid: order for oid, order in context.orders_to_consider.items()
+            if oid not in assigned_orders
+        }
+
+        if remaining_orders:
+            logger.info(f"Processing {len(remaining_orders)} remaining orders individually")
+            for order in remaining_orders.values():
+                # Find smallest vehicle that meets utilization requirements
+                vehicle = self.validator.get_optimal_vehicle_for_load(
+                    order.weight_tonnes,
+                    order.volume_m3,
+                    list(context.vehicles_available.values())
+                )
+
+                if vehicle:
+                    route = self._create_route_for_orders(state, [order], vehicle)
+                    is_valid, violations, reasoning = self.validator.validate_route(
+                        route, vehicle, context.orders_to_consider
+                    )
+
+                    if is_valid:
+                        routes.append(route)
+                        logger.info(f"✅ Created single-order route {route.route_id} on {vehicle.vehicle_type} truck")
+                    else:
+                        logger.warning(f"❌ Cannot create route for order {order.order_id}: {reasoning}")
 
         return routes if routes else None
 
