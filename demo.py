@@ -395,6 +395,7 @@ def demo_vfa_training():
         try:
             # Simulate an outcome
             outcome = OperationalOutcome(
+                outcome_id=f"outcome_{i}",
                 route_id=f"route_{i}",
                 vehicle_id="VEH_001",
                 predicted_fuel_cost=100.0 + i * 10,
@@ -404,9 +405,9 @@ def demo_vfa_training():
                 predicted_distance_km=150.0,
                 actual_distance_km=155.0,
                 on_time=True,
-                success=True,
                 customer_satisfaction_score=0.9,
                 successful_deliveries=2,
+                failed_deliveries=0,
                 notes=f"Test outcome {i}",
             )
 
