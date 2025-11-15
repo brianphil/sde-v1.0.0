@@ -1,0 +1,33 @@
+vfa:
+  state_feature_dim: 20
+  use_pytorch: true
+  learning_rate: 0.01
+  gamma: 0.95
+  special_handling_tags: ["fresh_food"]
+  train_batch_size: 32
+  train_epochs: 1
+
+cfa:
+  fuel_cost_per_km_by_vehicle:
+    5T: 9.0
+    10T: 12.0
+  driver_cost_per_hour_by_vehicle:
+    5T: 300.0
+    10T: 450.0
+  base_fuel_cost_per_liter: 150.0
+  vehicle_efficiency_km_per_liter:
+    5T: 8.5
+    10T: 7.0
+  traffic_multipliers: {}
+  distance_matrix: {}
+
+dla:
+  forecast_horizon_hours: 24
+  consolidation_threshold: 0.75
+
+business:
+  default_time_windows:
+    pickup_window:
+      start_minute: 510 # 8:30 AM
+      end_minute: 585 # 9:45 AM
+      zones: ["CBD", "Industrial"]

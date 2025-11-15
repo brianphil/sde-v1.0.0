@@ -1,0 +1,24 @@
+vfa:
+  state_feature_dim: 20
+  use_pytorch: false
+  learning_rate: 0.01
+  gamma: 0.95
+
+cfa:
+  fuel_per_km: 0.025
+  driver_cost_per_hour: 300.0
+  delay_penalty_per_minute: 5.0
+  traffic_multipliers: {}
+  distance_matrix: {}
+
+dla:
+  forecast_horizon_hours: 24
+  consolidation_threshold: 0.75
+
+# Business parameters should be stored externally (DB or LearningState)
+business:
+  default_time_windows:
+    pickup_window:
+      start_minute: 510 # 8:30 AM
+      end_minute: 585 # 9:45 AM
+      zones: ["CBD", "Industrial"]
