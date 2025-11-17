@@ -16,7 +16,9 @@ import logging
 import traceback
 
 from backend.api.schemas import ErrorResponse, HealthResponse
-from backend.api.routes import decisions, orders, routes, websocket
+from backend.api.routes import decisions, orders, routes, websocket, vehicles, customers
+from backend.api import auth  # Authentication routes
+from backend.db.database import init_database, close_database, check_database_health
 from backend.core.powell.engine import PowellEngine
 from backend.services.state_manager import StateManager
 from backend.services.event_orchestrator import EventOrchestrator
@@ -210,10 +212,27 @@ async def lifespan(app: FastAPI):
     """Manage application lifecycle."""
     # Startup
     logger.info("🚀 Starting Powell Sequential Decision Engine API")
+
+    # Initialize database
+    logger.info("Initializing database...")
+    try:
+        await init_database()
+        logger.info("✅ Database initialized")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize database: {e}")
+        raise
+
+    # Initialize app components
     app_state.initialize()
+
     yield
+
     # Shutdown
     app_state.shutdown()
+
+    # Close database
+    logger.info("Closing database connections...")
+    await close_database()
     logger.info("👋 Powell Engine API shutdown complete")
 
 
@@ -280,6 +299,10 @@ async def health_check():
             "learning": "healthy" if app_state.learning_coordinator else "unhealthy",
         }
 
+        # Check database health
+        db_health = await check_database_health()
+        components_status["database"] = "healthy" if db_health else "unhealthy"
+
         overall_status = "healthy" if all(
             s == "healthy" for s in components_status.values()
         ) else "degraded"
@@ -295,9 +318,12 @@ async def health_check():
 
 
 # Include routers
+app.include_router(auth.router)  # Auth router has its own prefix
 app.include_router(decisions.router, prefix="/api/v1", tags=["Decisions"])
 app.include_router(orders.router, prefix="/api/v1", tags=["Orders"])
+app.include_router(customers.router, prefix="/api/v1", tags=["Customers"])
 app.include_router(routes.router, prefix="/api/v1", tags=["Routes"])
+app.include_router(vehicles.router, prefix="/api/v1", tags=["Vehicles"])
 app.include_router(websocket.router, prefix="/api/v1", tags=["WebSocket"])
 
 

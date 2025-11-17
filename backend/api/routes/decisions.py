@@ -5,6 +5,7 @@ from typing import List, Optional
 from datetime import datetime
 import uuid
 import logging
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.schemas import (
     DecisionRequest,
@@ -17,13 +18,12 @@ from backend.api.schemas import (
 )
 from backend.core.models.decision import DecisionType
 from backend.core.models.state import SystemState
+from backend.db.database import get_db
+from backend.db.models import RouteModel, RouteStopModel, DecisionModel
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-# In-memory storage for decisions (replace with database in production)
-decision_store: dict = {}
 
 
 def get_app_state():
@@ -35,6 +35,7 @@ def get_app_state():
 @router.post("/decisions/make", response_model=DecisionResponse)
 async def make_decision(
     request: DecisionRequest,
+    db: AsyncSession = Depends(get_db),
     app_state=Depends(get_app_state),
 ):
     """Make a routing decision using the Powell engine.
@@ -75,12 +76,47 @@ async def make_decision(
         # Generate decision ID
         decision_id = f"dec_{uuid.uuid4().hex[:12]}"
 
-        # Store decision for later commit
-        decision_store[decision_id] = {
+        # Extract route IDs and order IDs from decision
+        route_ids = [route.route_id for route in decision.routes]
+        order_ids = []
+        for route in decision.routes:
+            order_ids.extend(route.order_ids)
+        order_ids = list(set(order_ids))  # Remove duplicates
+
+        # Get policy name
+        policy_name = getattr(
+            decision, "policy_name", getattr(decision, "hybrid_name", "unknown")
+        )
+
+        # Save decision to database
+        decision_model = DecisionModel(
+            decision_id=decision_id,
+            decision_type=decision_type.value,
+            policy_used=policy_name,
+            state_snapshot=None,  # Could save simplified state if needed
+            routes_created=route_ids,
+            orders_routed=order_ids,
+            total_cost_estimate=decision.expected_value,
+            decision_confidence=decision.confidence_score,
+            computation_time_ms=int(computation_time_ms),
+            committed=False,
+            executed=False,
+            created_at=datetime.now(),
+        )
+        db.add(decision_model)
+        await db.commit()
+        await db.refresh(decision_model)
+
+        logger.info(f"Decision {decision_id} saved to database")
+
+        # Also store decision object temporarily for commit (routes need to be created)
+        # We'll use a module-level cache with TTL
+        if not hasattr(make_decision, '_decision_cache'):
+            make_decision._decision_cache = {}
+        make_decision._decision_cache[decision_id] = {
             "decision": decision,
             "state": current_state,
             "timestamp": datetime.now(),
-            "committed": False,
         }
 
         # Convert routes to response schema
@@ -104,11 +140,6 @@ async def make_decision(
                 )
             )
 
-        # Build response
-        policy_name = getattr(
-            decision, "policy_name", getattr(decision, "hybrid_name", "unknown")
-        )
-
         response = DecisionResponse(
             decision_id=decision_id,
             decision_type=request.decision_type,
@@ -119,7 +150,7 @@ async def make_decision(
             routes=route_responses,
             reasoning=getattr(decision, "reasoning", ""),
             computation_time_ms=computation_time_ms,
-            timestamp=datetime.now(),
+            timestamp=decision_model.created_at,
             committed=False,
         )
 
@@ -137,6 +168,7 @@ async def make_decision(
 @router.post("/decisions/{decision_id}/commit", response_model=DecisionCommitResponse)
 async def commit_decision(
     decision_id: str,
+    db: AsyncSession = Depends(get_db),
     app_state=Depends(get_app_state),
 ):
     """Commit a previously made decision to execute it.
@@ -153,17 +185,29 @@ async def commit_decision(
     try:
         logger.info(f"Committing decision: {decision_id}")
 
-        # Retrieve decision
-        if decision_id not in decision_store:
+        # Load decision from database
+        result_db = await db.execute(
+            select(DecisionModel).where(DecisionModel.decision_id == decision_id)
+        )
+        decision_model = result_db.scalar_one_or_none()
+
+        if not decision_model:
             raise HTTPException(status_code=404, detail=f"Decision {decision_id} not found")
 
-        stored = decision_store[decision_id]
-
-        if stored["committed"]:
+        if decision_model.committed:
             raise HTTPException(
                 status_code=400,
                 detail=f"Decision {decision_id} already committed",
             )
+
+        # Retrieve decision object from cache
+        if not hasattr(make_decision, '_decision_cache') or decision_id not in make_decision._decision_cache:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Decision {decision_id} expired or not found in cache. Please make the decision again.",
+            )
+
+        stored = make_decision._decision_cache[decision_id]
 
         # Commit decision
         result = app_state.engine.commit_decision(
@@ -171,28 +215,69 @@ async def commit_decision(
             stored["state"],
         )
 
-        # Mark as committed
-        decision_store[decision_id]["committed"] = True
+        # Update decision in database
+        decision_model.committed = True
+        decision_model.committed_at = datetime.now()
+        await db.commit()
+        await db.refresh(decision_model)
+
+        logger.info(f"Decision {decision_id} marked as committed in database")
+
+        # Remove from cache
+        del make_decision._decision_cache[decision_id]
 
         # Extract route IDs from Route objects if needed
         routes_created = result["routes_created"]
         route_ids = []
 
         if routes_created:
-            # Import route_store from routes module
-            from backend.api.routes.routes import route_store
-
             if hasattr(routes_created[0], 'route_id'):
-                # Result contains Route objects, extract IDs and store routes
+                # Result contains Route objects, save to database
                 for route in routes_created:
                     route_ids.append(route.route_id)
-                    route_store[route.route_id] = route
+
+                    # Save route to database
+                    route_model = RouteModel(
+                        route_id=route.route_id,
+                        vehicle_id=route.vehicle_id,
+                        order_ids=route.order_ids,
+                        destination_cities=[city.value if hasattr(city, 'value') else city for city in route.destination_cities],
+                        total_distance_km=route.total_distance_km,
+                        estimated_duration_minutes=route.estimated_duration_minutes,
+                        estimated_cost_kes=route.estimated_cost_kes,
+                        status=route.status,
+                        estimated_fuel_cost=route.estimated_fuel_cost,
+                        estimated_time_cost=route.estimated_time_cost,
+                        estimated_delay_penalty=route.estimated_delay_penalty,
+                        decision_id=decision_id,  # Link route to decision
+                        created_at=route.created_at,
+                    )
+                    db.add(route_model)
+
+                    # Save route stops to database
+                    for stop in route.stops:
+                        stop_model = RouteStopModel(
+                            stop_id=stop.stop_id,
+                            route_id=route.route_id,
+                            order_ids=stop.order_ids,
+                            location=stop.location.model_dump() if hasattr(stop.location, 'model_dump') else stop.location.__dict__,
+                            stop_type=stop.stop_type,
+                            sequence_order=stop.sequence_order,
+                            estimated_arrival=stop.estimated_arrival,
+                            estimated_duration_minutes=stop.estimated_duration_minutes,
+                            status=stop.status,
+                        )
+                        db.add(stop_model)
 
                     # Apply route_created event to state manager
                     app_state.state_manager.apply_event(
                         "route_created",
                         {"route": route}
                     )
+
+                # Commit all routes to database
+                await db.commit()
+                logger.info(f"Saved {len(route_ids)} routes to database")
             else:
                 # Already string IDs
                 route_ids = routes_created
@@ -223,62 +308,64 @@ async def commit_decision(
         )
 
 
-@router.get("/decisions/{decision_id}", response_model=DecisionResponse)
-async def get_decision(decision_id: str):
-    """Get details of a specific decision.
+@router.get("/decisions/{decision_id}")
+async def get_decision(
+    decision_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get details of a specific decision from database.
 
     Args:
         decision_id: ID of the decision to retrieve
 
     Returns:
-        Decision details
+        Decision details from database
     """
     try:
-        if decision_id not in decision_store:
+        # Load decision from database
+        result = await db.execute(
+            select(DecisionModel).where(DecisionModel.decision_id == decision_id)
+        )
+        decision_model = result.scalar_one_or_none()
+
+        if not decision_model:
             raise HTTPException(status_code=404, detail=f"Decision {decision_id} not found")
 
-        stored = decision_store[decision_id]
-        decision = stored["decision"]
-
-        # Convert to response (simplified)
-        policy_name = getattr(
-            decision, "policy_name", getattr(decision, "hybrid_name", "unknown")
-        )
-
-        # Convert routes
-        route_responses = []
-        for route in decision.routes:
-            route_responses.append(
-                RouteResponse(
-                    route_id=route.route_id,
-                    vehicle_id=route.vehicle_id,
-                    order_ids=route.order_ids,
-                    stops=[],
-                    destination_cities=route.destination_cities,
-                    total_distance_km=route.total_distance_km,
-                    estimated_duration_minutes=route.estimated_duration_minutes,
-                    estimated_cost_kes=route.estimated_cost_kes,
-                    status=route.status,
-                    estimated_fuel_cost=route.estimated_fuel_cost,
-                    estimated_time_cost=route.estimated_time_cost,
-                    estimated_delay_penalty=route.estimated_delay_penalty,
-                    created_at=route.created_at,
+        # Load associated routes if committed
+        routes_data = []
+        if decision_model.committed and decision_model.routes_created:
+            routes_result = await db.execute(
+                select(RouteModel).where(
+                    RouteModel.route_id.in_(decision_model.routes_created)
                 )
             )
+            route_models = routes_result.scalars().all()
 
-        return DecisionResponse(
-            decision_id=decision_id,
-            decision_type=DecisionType.DAILY_ROUTE_PLANNING,  # Simplified
-            policy_name=policy_name,
-            recommended_action=decision.recommended_action,
-            confidence_score=decision.confidence_score,
-            expected_value=decision.expected_value,
-            routes=route_responses,
-            reasoning=getattr(decision, "reasoning", ""),
-            computation_time_ms=0.0,
-            timestamp=stored["timestamp"],
-            committed=stored["committed"],
-        )
+            for route_model in route_models:
+                routes_data.append({
+                    "route_id": route_model.route_id,
+                    "vehicle_id": route_model.vehicle_id,
+                    "order_ids": route_model.order_ids,
+                    "destination_cities": route_model.destination_cities,
+                    "total_distance_km": route_model.total_distance_km,
+                    "estimated_cost_kes": route_model.estimated_cost_kes,
+                    "status": route_model.status.value,
+                })
+
+        return {
+            "decision_id": decision_model.decision_id,
+            "decision_type": decision_model.decision_type,
+            "policy_used": decision_model.policy_used,
+            "routes_created": decision_model.routes_created,
+            "orders_routed": decision_model.orders_routed,
+            "total_cost_estimate": decision_model.total_cost_estimate,
+            "decision_confidence": decision_model.decision_confidence,
+            "computation_time_ms": decision_model.computation_time_ms,
+            "committed": decision_model.committed,
+            "committed_at": decision_model.committed_at.isoformat() if decision_model.committed_at else None,
+            "created_at": decision_model.created_at.isoformat(),
+            "routes": routes_data,
+        }
 
     except HTTPException:
         raise
@@ -293,8 +380,9 @@ async def get_decision(decision_id: str):
 async def list_decisions(
     limit: Optional[int] = 100,
     committed_only: Optional[bool] = None,
+    db: AsyncSession = Depends(get_db),
 ):
-    """List all decision IDs.
+    """List all decision IDs from database.
 
     Args:
         limit: Maximum number of decisions to return
@@ -304,21 +392,27 @@ async def list_decisions(
         List of decision IDs
     """
     try:
-        decision_ids = list(decision_store.keys())
+        # Build query
+        query = select(DecisionModel)
 
+        # Apply filter
         if committed_only is not None:
-            decision_ids = [
-                did for did in decision_ids
-                if decision_store[did]["committed"] == committed_only
-            ]
+            query = query.where(DecisionModel.committed == committed_only)
 
-        # Sort by timestamp (most recent first)
-        decision_ids.sort(
-            key=lambda did: decision_store[did]["timestamp"],
-            reverse=True,
-        )
+        # Sort by created_at (most recent first)
+        query = query.order_by(DecisionModel.created_at.desc())
 
-        return decision_ids[:limit]
+        # Limit results
+        query = query.limit(limit)
+
+        # Execute query
+        result = await db.execute(query)
+        decision_models = result.scalars().all()
+
+        # Extract decision IDs
+        decision_ids = [decision_model.decision_id for decision_model in decision_models]
+
+        return decision_ids
 
     except Exception as e:
         logger.error(f"Error listing decisions: {e}")

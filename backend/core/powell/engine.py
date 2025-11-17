@@ -20,6 +20,7 @@ from .vfa import ValueFunctionApproximation
 from .dla import DirectLookaheadApproximation
 from .hybrids import CFAVFAHybrid, DLAVFAHybrid, PFACFAHybrid
 from backend.utils.config import load_model_config
+from ..consolidation import ConsolidationEngine, PoolConfiguration
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,22 @@ class PowellEngine:
         self.cfa_vfa_hybrid = CFAVFAHybrid(self.cfa, self.vfa)
         self.dla_vfa_hybrid = DLAVFAHybrid(self.dla, self.vfa)
         self.pfa_cfa_hybrid = PFACFAHybrid(self.pfa, self.cfa)
+
+        # Consolidation Engine
+        consolidation_cfg = config.get("consolidation", {})
+        pool_config = PoolConfiguration(
+            bulk_min_weight_utilization=consolidation_cfg.get("bulk_min_weight_utilization", 0.60),
+            bulk_min_volume_utilization=consolidation_cfg.get("bulk_min_volume_utilization", 0.50),
+            max_pool_size=consolidation_cfg.get("max_pool_size", 20),
+            max_pool_wait_time_minutes=consolidation_cfg.get("max_pool_wait_time_minutes", 120),
+            min_batch_size=consolidation_cfg.get("min_batch_size", 2),
+            trigger_on_cluster_size=consolidation_cfg.get("trigger_on_cluster_size", 3),
+            scheduled_consolidation_times=consolidation_cfg.get(
+                "scheduled_consolidation_times", ["09:00", "14:00", "17:00"]
+            ),
+        )
+        self.consolidation_engine = ConsolidationEngine(pool_config=pool_config)
+        logger.info("Consolidation engine integrated with Powell SDE")
 
         # Decision history
         self.decision_history: List[Dict[str, Any]] = []
@@ -431,6 +448,191 @@ class PowellEngine:
             stats["avg_expected_value"] = stats["total_expected_value"] / count
 
         return policy_stats
+
+    def handle_order_arrival(self, order: any, state: SystemState) -> Optional[Union[PolicyDecision, HybridDecision]]:
+        """Handle new order arrival with consolidation logic.
+
+        Workflow:
+        1. Consolidation engine classifies order (bulk/consolidated/urgent)
+        2. BULK/URGENT → Immediate Powell SDE routing
+        3. CONSOLIDATED → Add to pool, check if consolidation should trigger
+
+        Args:
+            order: Newly arrived order
+            state: Current system state
+
+        Returns:
+            Decision if immediate routing needed, None if added to pool
+        """
+        # Step 1: Consolidation engine classifies order
+        result = self.consolidation_engine.process_new_order(order, state)
+
+        # Step 2: Handle based on classification
+        if result.bulk_order_ids or result.urgent_order_ids:
+            # Immediate routing via Powell SDE
+            orders_to_route = result.bulk_order_ids + result.urgent_order_ids
+
+            logger.info(f"Routing {len(orders_to_route)} bulk/urgent orders immediately")
+
+            # Build context for Powell SDE
+            context = self._build_decision_context(
+                state,
+                DecisionType.ORDER_ARRIVAL,
+                orders_to_consider={oid: state.pending_orders[oid] for oid in orders_to_route if oid in state.pending_orders},
+                trigger_reason=f"Bulk/Urgent order arrival: {', '.join(orders_to_route)}"
+            )
+
+            # Powell SDE makes routing decision
+            decision = self._select_and_execute_policy(state, context, DecisionType.ORDER_ARRIVAL)
+
+            return decision
+
+        elif result.pooled_order_ids:
+            # Added to consolidation pool
+            logger.info(f"Order(s) added to consolidation pool. Pool status: {result.pool_status}")
+
+            # Check if consolidation should trigger
+            if result.should_trigger_consolidation:
+                logger.info("Consolidation triggered by pool conditions")
+                return self.run_consolidation_decision(state)
+
+        return None
+
+    def run_consolidation_decision(self, state: SystemState) -> Optional[List]:
+        """Run consolidation with Powell SDE decision-making.
+
+        Workflow:
+        1. Consolidation engine prepares filtered order groups (opportunities)
+        2. For each opportunity, Powell SDE evaluates via CFA/VFA/PFA/DLA
+        3. Powell SDE decides: ACCEPT (create routes) or DEFER (orders stay in pool)
+        4. Remove routed orders from pool
+
+        Args:
+            state: Current system state
+
+        Returns:
+            List of created routes (may be empty if all deferred)
+        """
+        # Step 1: Prepare consolidation opportunities
+        opportunities = self.consolidation_engine.prepare_consolidation_opportunities(state)
+
+        if not opportunities:
+            logger.info("No consolidation opportunities available")
+            return []
+
+        logger.info(f"Prepared {len(opportunities)} consolidation opportunities for evaluation")
+
+        # Step 2: For each opportunity, Powell SDE evaluates
+        all_routes = []
+
+        for opp in opportunities:
+            # Get orders for this opportunity
+            orders_to_consider = {
+                oid: state.pending_orders[oid]
+                for oid in opp.order_ids
+                if oid in state.pending_orders
+            }
+
+            if not orders_to_consider:
+                logger.warning(f"No pending orders found for opportunity {opp.cluster_id}")
+                continue
+
+            # Build context
+            context = self._build_decision_context(
+                state,
+                DecisionType.DAILY_ROUTE_PLANNING,
+                orders_to_consider=orders_to_consider,
+                trigger_reason=f"Consolidation opportunity: {opp.cluster_id} "
+                              f"({len(opp.order_ids)} orders, {opp.estimated_total_weight:.1f}T, "
+                              f"score={opp.compatibility_score:.2f})"
+            )
+
+            # Powell SDE evaluates this opportunity
+            decision = self._select_and_execute_policy(
+                state,
+                context,
+                DecisionType.DAILY_ROUTE_PLANNING
+            )
+
+            # Check if Powell SDE accepted (created routes)
+            if hasattr(decision, 'routes') and decision.routes:
+                # ✅ ACCEPTED: Extract routes
+                all_routes.extend(decision.routes)
+
+                # Remove routed orders from pool
+                routed_order_ids = []
+                for route in decision.routes:
+                    if hasattr(route, 'order_ids'):
+                        routed_order_ids.extend(route.order_ids)
+
+                self.consolidation_engine.remove_routed_orders(routed_order_ids)
+                logger.info(f"Powell SDE accepted consolidation: routed {len(routed_order_ids)} orders")
+            else:
+                # ❌ DEFERRED: Orders remain in pool
+                logger.info(
+                    f"Powell SDE deferred consolidation for {opp.cluster_id} "
+                    f"({len(opp.order_ids)} orders remain in pool)"
+                )
+
+        return all_routes
+
+    def daily_route_planning_with_consolidation(self, state: SystemState) -> List:
+        """Daily route planning with consolidation support.
+
+        Workflow:
+        1. Check consolidation pool and run consolidation if triggered
+        2. Handle remaining pending orders via standard Powell SDE
+
+        Args:
+            state: Current system state
+
+        Returns:
+            List of all routes (consolidated + standard)
+        """
+        all_routes = []
+
+        # Step 1: Check consolidation pool
+        if self.consolidation_engine.pool.should_trigger_consolidation():
+            logger.info("Consolidation triggered during daily planning")
+            consolidation_routes = self.run_consolidation_decision(state)
+            if consolidation_routes:
+                all_routes.extend(consolidation_routes)
+
+        # Step 2: Handle remaining pending orders
+        remaining_orders = {
+            oid: order
+            for oid, order in state.pending_orders.items()
+            if order.status == OrderStatus.PENDING and not hasattr(order, 'assigned_route_id') or order.assigned_route_id is None
+        }
+
+        if remaining_orders:
+            logger.info(f"Planning routes for {len(remaining_orders)} remaining orders")
+            context = self._build_decision_context(
+                state,
+                DecisionType.DAILY_ROUTE_PLANNING,
+                orders_to_consider=remaining_orders,
+                trigger_reason="Daily route planning - remaining orders"
+            )
+
+            decision = self._select_and_execute_policy(
+                state,
+                context,
+                DecisionType.DAILY_ROUTE_PLANNING
+            )
+
+            if hasattr(decision, 'routes') and decision.routes:
+                all_routes.extend(decision.routes)
+
+        logger.info(f"Daily planning complete: {len(all_routes)} total routes created")
+        return all_routes
+
+    def get_consolidation_pool_status(self) -> Dict:
+        """Get current consolidation pool status for monitoring.
+
+        Returns:
+            Dict with pool size, clusters, wait times, and trigger status
+        """
+        return self.consolidation_engine.get_pool_status()
 
     def get_learned_state(self) -> Dict[str, any]:
         """Export current learned state for persistence."""

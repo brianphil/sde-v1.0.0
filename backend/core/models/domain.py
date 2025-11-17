@@ -42,6 +42,7 @@ class DestinationCity(str, Enum):
     NAKURU = "Nakuru"
     ELDORET = "Eldoret"
     KITALE = "Kitale"
+    KISUMU = "kisumu"
 
 
 @dataclass

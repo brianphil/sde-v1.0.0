@@ -90,8 +90,22 @@ class FeedbackProcessor:
         """
 
         # Estimate immediate reward (profit from route)
-        # In production: use actual order prices and costs
-        estimated_profit = 1500 - outcome.actual_fuel_cost  # Placeholder
+        # Calculate based on successful deliveries and costs
+        revenue_per_delivery = 1500  # Average revenue per delivery
+        total_revenue = revenue_per_delivery * outcome.successful_deliveries
+
+        total_costs = (
+            outcome.actual_fuel_cost +
+            (outcome.actual_duration_minutes / 60.0 * 500)  # Driver cost
+        )
+
+        estimated_profit = total_revenue - total_costs
+
+        # Apply penalty for failed deliveries and late delivery
+        if not outcome.on_time:
+            estimated_profit *= 0.7  # 30% profit reduction for late delivery
+
+        estimated_profit -= (outcome.failed_deliveries * 500)  # Penalty per failed delivery
 
         # Value update magnitude depends on error
         value_error = abs(estimated_profit) * (1.0 if outcome.on_time else 0.7)
@@ -123,7 +137,7 @@ class FeedbackProcessor:
 
     def _compute_dla_signals(self, outcome: OperationalOutcome) -> Dict[str, float]:
         """Compute learning signals for Direct Lookahead Approximation.
-        
+
         DLA learns: demand forecast accuracy, consolidation effectiveness
         """
 
@@ -132,9 +146,20 @@ class FeedbackProcessor:
             (outcome.get_accuracy_fuel() + outcome.get_accuracy_duration()) / 2.0
         )
 
+        # Consolidation effectiveness: ratio of successful deliveries to planned stops
+        # Higher value indicates better batching/consolidation
+        total_deliveries = outcome.successful_deliveries + outcome.failed_deliveries
+        if total_deliveries > 0:
+            # Measure efficiency: more deliveries per unit distance = better consolidation
+            deliveries_per_km = total_deliveries / (outcome.actual_distance_km + 1.0)
+            # Normalize to 0-1 range (assume 0.1 deliveries/km is excellent)
+            consolidation_achieved = min(1.0, deliveries_per_km / 0.1)
+        else:
+            consolidation_achieved = 0.0
+
         return {
             "forecast_accuracy": planning_quality,
-            "consolidation_achieved": 1.0,  # Placeholder
+            "consolidation_achieved": consolidation_achieved,
             "multi_period_efficiency": planning_quality,
         }
 

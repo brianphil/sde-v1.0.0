@@ -5,6 +5,8 @@ from typing import List, Optional
 from datetime import datetime
 import uuid
 import logging
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.schemas import (
     RouteResponse,
@@ -13,14 +15,19 @@ from backend.api.schemas import (
     OperationalOutcomeResponse,
     RouteStopSchema,
 )
-from backend.core.models.domain import OperationalOutcome, RouteStatus
+from backend.core.models.domain import (
+    OperationalOutcome,
+    RouteStatus,
+    Route,
+    RouteStop,
+    Location,
+)
+from backend.db.database import get_db
+from backend.db.models import RouteModel, RouteStopModel
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-# In-memory storage for routes (replace with database in production)
-route_store: dict = {}
 
 
 def get_app_state():
@@ -34,7 +41,7 @@ async def list_routes(
     status: Optional[RouteStatusEnum] = None,
     vehicle_id: Optional[str] = None,
     limit: Optional[int] = 100,
-    app_state=Depends(get_app_state),
+    db: AsyncSession = Depends(get_db),
 ):
     """List all routes with optional filtering.
 
@@ -47,28 +54,80 @@ async def list_routes(
         List of routes matching filters
     """
     try:
-        # Get routes from state manager if available
-        current_state = app_state.state_manager.get_current_state()
-
-        if current_state:
-            # Use routes from state
-            routes = list(current_state.active_routes.values())
-        else:
-            # Fallback to in-memory store
-            routes = list(route_store.values())
+        # Build query
+        query = select(RouteModel)
 
         # Apply filters
         if status:
-            routes = [r for r in routes if r.status.value == status.value]
+            # Map schema enum to domain enum
+            domain_status = RouteStatus[status.value.upper()]
+            query = query.where(RouteModel.status == domain_status)
 
         if vehicle_id:
-            routes = [r for r in routes if r.vehicle_id == vehicle_id]
+            query = query.where(RouteModel.vehicle_id == vehicle_id)
 
         # Sort by created_at (most recent first)
-        routes.sort(key=lambda r: r.created_at, reverse=True)
+        query = query.order_by(RouteModel.created_at.desc())
 
         # Limit results
-        routes = routes[:limit]
+        query = query.limit(limit)
+
+        # Execute query
+        result = await db.execute(query)
+        route_models = result.scalars().all()
+
+        # Convert to domain models and responses
+        routes = []
+        for route_model in route_models:
+            # Load associated stops
+            stops_result = await db.execute(
+                select(RouteStopModel)
+                .where(RouteStopModel.route_id == route_model.route_id)
+                .order_by(RouteStopModel.sequence_order)
+            )
+            stop_models = stops_result.scalars().all()
+
+            # Convert stops to domain models
+            stops = [
+                RouteStop(
+                    stop_id=stop.stop_id,
+                    order_ids=stop.order_ids,
+                    location=Location(**stop.location),
+                    stop_type=stop.stop_type,
+                    sequence_order=stop.sequence_order,
+                    estimated_arrival=stop.estimated_arrival,
+                    estimated_duration_minutes=stop.estimated_duration_minutes,
+                    status=stop.status,
+                    actual_arrival=stop.actual_arrival,
+                    actual_duration_minutes=stop.actual_duration_minutes,
+                )
+                for stop in stop_models
+            ]
+
+            # Convert route to domain model
+            route = Route(
+                route_id=route_model.route_id,
+                vehicle_id=route_model.vehicle_id,
+                order_ids=route_model.order_ids,
+                stops=stops,
+                destination_cities=route_model.destination_cities,
+                total_distance_km=route_model.total_distance_km,
+                estimated_duration_minutes=route_model.estimated_duration_minutes,
+                estimated_cost_kes=route_model.estimated_cost_kes,
+                status=route_model.status,
+                estimated_fuel_cost=route_model.estimated_fuel_cost,
+                estimated_time_cost=route_model.estimated_time_cost,
+                estimated_delay_penalty=route_model.estimated_delay_penalty,
+                actual_distance_km=route_model.actual_distance_km,
+                actual_duration_minutes=route_model.actual_duration_minutes,
+                actual_cost_kes=route_model.actual_cost_kes,
+                actual_fuel_cost=route_model.actual_fuel_cost,
+                decision_id=route_model.decision_id,
+                created_at=route_model.created_at,
+                started_at=route_model.started_at,
+                completed_at=route_model.completed_at,
+            )
+            routes.append(route)
 
         # Convert to response
         responses = []
@@ -128,7 +187,7 @@ async def list_routes(
 @router.get("/routes/{route_id}", response_model=RouteResponse)
 async def get_route(
     route_id: str,
-    app_state=Depends(get_app_state),
+    db: AsyncSession = Depends(get_db),
 ):
     """Get details of a specific route.
 
@@ -139,16 +198,63 @@ async def get_route(
         Route details with stops, orders, and performance metrics
     """
     try:
-        # Try to get from state manager first
-        current_state = app_state.state_manager.get_current_state()
-        route = None
+        # Load route from database
+        result = await db.execute(
+            select(RouteModel).where(RouteModel.route_id == route_id)
+        )
+        route_model = result.scalar_one_or_none()
 
-        if current_state and route_id in current_state.active_routes:
-            route = current_state.active_routes[route_id]
-        elif route_id in route_store:
-            route = route_store[route_id]
-        else:
+        if not route_model:
             raise HTTPException(status_code=404, detail=f"Route {route_id} not found")
+
+        # Load associated stops
+        stops_result = await db.execute(
+            select(RouteStopModel)
+            .where(RouteStopModel.route_id == route_id)
+            .order_by(RouteStopModel.sequence_order)
+        )
+        stop_models = stops_result.scalars().all()
+
+        # Convert stops to domain models
+        stops = [
+            RouteStop(
+                stop_id=stop.stop_id,
+                order_ids=stop.order_ids,
+                location=Location(**stop.location),
+                stop_type=stop.stop_type,
+                sequence_order=stop.sequence_order,
+                estimated_arrival=stop.estimated_arrival,
+                estimated_duration_minutes=stop.estimated_duration_minutes,
+                status=stop.status,
+                actual_arrival=stop.actual_arrival,
+                actual_duration_minutes=stop.actual_duration_minutes,
+            )
+            for stop in stop_models
+        ]
+
+        # Convert route to domain model
+        route = Route(
+            route_id=route_model.route_id,
+            vehicle_id=route_model.vehicle_id,
+            order_ids=route_model.order_ids,
+            stops=stops,
+            destination_cities=route_model.destination_cities,
+            total_distance_km=route_model.total_distance_km,
+            estimated_duration_minutes=route_model.estimated_duration_minutes,
+            estimated_cost_kes=route_model.estimated_cost_kes,
+            status=route_model.status,
+            estimated_fuel_cost=route_model.estimated_fuel_cost,
+            estimated_time_cost=route_model.estimated_time_cost,
+            estimated_delay_penalty=route_model.estimated_delay_penalty,
+            actual_distance_km=route_model.actual_distance_km,
+            actual_duration_minutes=route_model.actual_duration_minutes,
+            actual_cost_kes=route_model.actual_cost_kes,
+            actual_fuel_cost=route_model.actual_fuel_cost,
+            decision_id=route_model.decision_id,
+            created_at=route_model.created_at,
+            started_at=route_model.started_at,
+            completed_at=route_model.completed_at,
+        )
 
         # Convert stops to schema
         stops_schema = []
@@ -203,6 +309,7 @@ async def get_route(
 @router.post("/routes/{route_id}/start")
 async def start_route(
     route_id: str,
+    db: AsyncSession = Depends(get_db),
     app_state=Depends(get_app_state),
 ):
     """Mark a route as started (in progress).
@@ -214,24 +321,35 @@ async def start_route(
         Success message
     """
     try:
-        current_state = app_state.state_manager.get_current_state()
+        # Load route from database
+        result = await db.execute(
+            select(RouteModel).where(RouteModel.route_id == route_id)
+        )
+        route_model = result.scalar_one_or_none()
 
-        if not current_state or route_id not in current_state.active_routes:
+        if not route_model:
             raise HTTPException(status_code=404, detail=f"Route {route_id} not found")
 
-        route = current_state.active_routes[route_id]
-
-        if route.status != RouteStatus.PLANNED:
+        if route_model.status != RouteStatus.PLANNED:
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot start route in status: {route.status.value}",
+                detail=f"Cannot start route in status: {route_model.status.value}",
             )
 
-        # Apply route started event
-        new_state = app_state.state_manager.apply_event(
-            "route_started",
-            {"route_id": route_id},
-        )
+        # Update route status in database
+        route_model.status = RouteStatus.IN_PROGRESS
+        route_model.started_at = datetime.now()
+
+        await db.commit()
+        await db.refresh(route_model)
+
+        # Also update state manager if available
+        current_state = app_state.state_manager.get_current_state()
+        if current_state and route_id in current_state.active_routes:
+            new_state = app_state.state_manager.apply_event(
+                "route_started",
+                {"route_id": route_id},
+            )
 
         logger.info(f"Route {route_id} started successfully")
 
@@ -239,7 +357,7 @@ async def start_route(
             "success": True,
             "message": f"Route {route_id} started",
             "route_id": route_id,
-            "started_at": datetime.now().isoformat(),
+            "started_at": route_model.started_at.isoformat(),
         }
 
     except HTTPException:
@@ -254,6 +372,7 @@ async def start_route(
 @router.post("/routes/{route_id}/complete")
 async def complete_route(
     route_id: str,
+    db: AsyncSession = Depends(get_db),
     app_state=Depends(get_app_state),
 ):
     """Mark a route as completed.
@@ -265,24 +384,35 @@ async def complete_route(
         Success message
     """
     try:
-        current_state = app_state.state_manager.get_current_state()
+        # Load route from database
+        result = await db.execute(
+            select(RouteModel).where(RouteModel.route_id == route_id)
+        )
+        route_model = result.scalar_one_or_none()
 
-        if not current_state or route_id not in current_state.active_routes:
+        if not route_model:
             raise HTTPException(status_code=404, detail=f"Route {route_id} not found")
 
-        route = current_state.active_routes[route_id]
-
-        if route.status != RouteStatus.IN_PROGRESS:
+        if route_model.status != RouteStatus.IN_PROGRESS:
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot complete route in status: {route.status.value}",
+                detail=f"Cannot complete route in status: {route_model.status.value}",
             )
 
-        # Apply route completed event
-        new_state = app_state.state_manager.apply_event(
-            "route_completed",
-            {"route_id": route_id},
-        )
+        # Update route status in database
+        route_model.status = RouteStatus.COMPLETED
+        route_model.completed_at = datetime.now()
+
+        await db.commit()
+        await db.refresh(route_model)
+
+        # Also update state manager if available
+        current_state = app_state.state_manager.get_current_state()
+        if current_state and route_id in current_state.active_routes:
+            new_state = app_state.state_manager.apply_event(
+                "route_completed",
+                {"route_id": route_id},
+            )
 
         logger.info(f"Route {route_id} completed successfully")
 
@@ -290,7 +420,7 @@ async def complete_route(
             "success": True,
             "message": f"Route {route_id} completed",
             "route_id": route_id,
-            "completed_at": datetime.now().isoformat(),
+            "completed_at": route_model.completed_at.isoformat(),
         }
 
     except HTTPException:
@@ -397,7 +527,7 @@ async def record_outcome(
 @router.delete("/routes/{route_id}")
 async def cancel_route(
     route_id: str,
-    app_state=Depends(get_app_state),
+    db: AsyncSession = Depends(get_db),
 ):
     """Cancel a planned route.
 
@@ -411,21 +541,26 @@ async def cancel_route(
         Success message
     """
     try:
-        current_state = app_state.state_manager.get_current_state()
+        # Load route from database
+        result = await db.execute(
+            select(RouteModel).where(RouteModel.route_id == route_id)
+        )
+        route_model = result.scalar_one_or_none()
 
-        if not current_state or route_id not in current_state.active_routes:
+        if not route_model:
             raise HTTPException(status_code=404, detail=f"Route {route_id} not found")
 
-        route = current_state.active_routes[route_id]
-
-        if route.status != RouteStatus.PLANNED:
+        if route_model.status != RouteStatus.PLANNED:
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot cancel route in status: {route.status.value}. Only PLANNED routes can be cancelled.",
+                detail=f"Cannot cancel route in status: {route_model.status.value}. Only PLANNED routes can be cancelled.",
             )
 
-        # Update route status to cancelled
-        route.status = RouteStatus.CANCELLED
+        # Update route status to cancelled in database
+        route_model.status = RouteStatus.CANCELLED
+
+        await db.commit()
+        await db.refresh(route_model)
 
         logger.info(f"Route {route_id} cancelled successfully")
 

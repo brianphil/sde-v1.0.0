@@ -5,6 +5,8 @@ from typing import List, Optional
 from datetime import datetime
 import uuid
 import logging
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.schemas import (
     OrderCreateRequest,
@@ -12,15 +14,14 @@ from backend.api.schemas import (
     OrderUpdateRequest,
     OrderStatusEnum,
 )
-from backend.core.models.domain import Order, OrderStatus, TimeWindow
+from backend.core.models.domain import Order, OrderStatus, TimeWindow, Location
 from backend.services.event_orchestrator import Event, EventPriority
+from backend.db.database import get_db
+from backend.db.models import OrderModel
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-# In-memory storage for orders (replace with database in production)
-order_store: dict = {}
 
 
 def get_app_state():
@@ -32,6 +33,7 @@ def get_app_state():
 @router.post("/orders", response_model=OrderResponse, status_code=201)
 async def create_order(
     request: OrderCreateRequest,
+    db: AsyncSession = Depends(get_db),
     app_state=Depends(get_app_state),
 ):
     """Create a new delivery order.
@@ -78,8 +80,30 @@ async def create_order(
             updated_at=datetime.now(),
         )
 
-        # Store order
-        order_store[order_id] = order
+        # Save order to database
+        order_model = OrderModel(
+            order_id=order.order_id,
+            customer_id=order.customer_id,
+            pickup_location=order.pickup_location.model_dump(),
+            destination_city=order.destination_city,
+            destination_location=order.destination_location.model_dump() if order.destination_location else None,
+            weight_tonnes=order.weight_tonnes,
+            volume_m3=order.volume_m3,
+            time_window_start=order.time_window.start_time,
+            time_window_end=order.time_window.end_time,
+            delivery_window_start=order.delivery_window.start_time if order.delivery_window else None,
+            delivery_window_end=order.delivery_window.end_time if order.delivery_window else None,
+            priority=order.priority,
+            special_handling=order.special_handling,
+            customer_constraints=order.customer_constraints,
+            price_kes=order.price_kes,
+            status=order.status,
+        )
+        db.add(order_model)
+        await db.commit()
+        await db.refresh(order_model)
+
+        logger.info(f"Order {order_id} saved to database")
 
         # Submit event to orchestrator if immediate processing needed
         if request.priority >= 1:  # High or urgent priority
@@ -131,7 +155,10 @@ async def create_order(
 
 
 @router.get("/orders/{order_id}", response_model=OrderResponse)
-async def get_order(order_id: str):
+async def get_order(
+    order_id: str,
+    db: AsyncSession = Depends(get_db),
+):
     """Get details of a specific order.
 
     Args:
@@ -141,10 +168,42 @@ async def get_order(order_id: str):
         Order details
     """
     try:
-        if order_id not in order_store:
+        # Load order from database
+        result = await db.execute(
+            select(OrderModel).where(OrderModel.order_id == order_id)
+        )
+        order_model = result.scalar_one_or_none()
+
+        if not order_model:
             raise HTTPException(status_code=404, detail=f"Order {order_id} not found")
 
-        order = order_store[order_id]
+        # Convert ORM model to domain model
+        order = Order(
+            order_id=order_model.order_id,
+            customer_id=order_model.customer_id,
+            customer_name=order_model.customer_id,  # Could load from customer table
+            pickup_location=Location(**order_model.pickup_location),
+            destination_city=order_model.destination_city,
+            destination_location=Location(**order_model.destination_location) if order_model.destination_location else None,
+            weight_tonnes=order_model.weight_tonnes,
+            volume_m3=order_model.volume_m3,
+            time_window=TimeWindow(
+                start_time=order_model.time_window_start,
+                end_time=order_model.time_window_end,
+            ),
+            delivery_window=TimeWindow(
+                start_time=order_model.delivery_window_start,
+                end_time=order_model.delivery_window_end,
+            ) if order_model.delivery_window_start else None,
+            priority=order_model.priority,
+            special_handling=order_model.special_handling,
+            customer_constraints=order_model.customer_constraints,
+            price_kes=order_model.price_kes,
+            status=order_model.status,
+            assigned_route_id=order_model.assigned_route_id,
+            created_at=order_model.created_at,
+            updated_at=order_model.updated_at,
+        )
 
         return OrderResponse(
             order_id=order.order_id,
@@ -181,7 +240,7 @@ async def list_orders(
     status: Optional[OrderStatusEnum] = None,
     customer_id: Optional[str] = None,
     limit: Optional[int] = 100,
-    app_state=Depends(get_app_state),
+    db: AsyncSession = Depends(get_db),
 ):
     """List all orders with optional filtering.
 
@@ -194,32 +253,59 @@ async def list_orders(
         List of orders matching filters
     """
     try:
-        # Get orders from state manager if available
-        current_state = app_state.state_manager.get_current_state()
-
-        if current_state:
-            # Use orders from state
-            orders = list(current_state.pending_orders.values())
-        else:
-            # Fallback to in-memory store
-            orders = list(order_store.values())
+        # Build query
+        query = select(OrderModel)
 
         # Apply filters
         if status:
-            orders = [o for o in orders if o.status.value == status.value]
+            # Map schema enum to domain enum
+            domain_status = OrderStatus[status.value.upper()]
+            query = query.where(OrderModel.status == domain_status)
 
         if customer_id:
-            orders = [o for o in orders if o.customer_id == customer_id]
+            query = query.where(OrderModel.customer_id == customer_id)
 
         # Sort by created_at (most recent first)
-        orders.sort(key=lambda o: o.created_at, reverse=True)
+        query = query.order_by(OrderModel.created_at.desc())
 
         # Limit results
-        orders = orders[:limit]
+        query = query.limit(limit)
+
+        # Execute query
+        result = await db.execute(query)
+        order_models = result.scalars().all()
 
         # Convert to response
         responses = []
-        for order in orders:
+        for order_model in order_models:
+            # Convert to domain model first
+            order = Order(
+                order_id=order_model.order_id,
+                customer_id=order_model.customer_id,
+                customer_name=order_model.customer_id,  # Could load from customer table
+                pickup_location=Location(**order_model.pickup_location),
+                destination_city=order_model.destination_city,
+                destination_location=Location(**order_model.destination_location) if order_model.destination_location else None,
+                weight_tonnes=order_model.weight_tonnes,
+                volume_m3=order_model.volume_m3,
+                time_window=TimeWindow(
+                    start_time=order_model.time_window_start,
+                    end_time=order_model.time_window_end,
+                ),
+                delivery_window=TimeWindow(
+                    start_time=order_model.delivery_window_start,
+                    end_time=order_model.delivery_window_end,
+                ) if order_model.delivery_window_start else None,
+                priority=order_model.priority,
+                special_handling=order_model.special_handling,
+                customer_constraints=order_model.customer_constraints,
+                price_kes=order_model.price_kes,
+                status=order_model.status,
+                assigned_route_id=order_model.assigned_route_id,
+                created_at=order_model.created_at,
+                updated_at=order_model.updated_at,
+            )
+
             responses.append(
                 OrderResponse(
                     order_id=order.order_id,
@@ -256,6 +342,7 @@ async def list_orders(
 async def update_order(
     order_id: str,
     request: OrderUpdateRequest,
+    db: AsyncSession = Depends(get_db),
     app_state=Depends(get_app_state),
 ):
     """Update an existing order.
@@ -271,45 +358,71 @@ async def update_order(
         Updated order
     """
     try:
-        if order_id not in order_store:
+        # Load order from database
+        result = await db.execute(
+            select(OrderModel).where(OrderModel.order_id == order_id)
+        )
+        order_model = result.scalar_one_or_none()
+
+        if not order_model:
             raise HTTPException(status_code=404, detail=f"Order {order_id} not found")
 
-        order = order_store[order_id]
-
         # Check if order can be updated
-        if order.status in [OrderStatus.IN_TRANSIT, OrderStatus.DELIVERED]:
+        if order_model.status in [OrderStatus.IN_TRANSIT, OrderStatus.DELIVERED]:
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot update order in status: {order.status.value}",
+                detail=f"Cannot update order in status: {order_model.status.value}",
             )
 
         # Update fields
         if request.priority is not None:
-            order.priority = request.priority
+            order_model.priority = request.priority
 
         if request.special_handling is not None:
-            order.special_handling = request.special_handling
+            order_model.special_handling = request.special_handling
 
         if request.customer_constraints is not None:
-            order.customer_constraints = request.customer_constraints
+            order_model.customer_constraints = request.customer_constraints
 
         if request.status is not None:
             # Map schema enum to domain enum
-            order.status = OrderStatus[request.status.value.upper()]
+            order_model.status = OrderStatus[request.status.value.upper()]
 
-        order.updated_at = datetime.now()
+        order_model.updated_at = datetime.now()
 
-        # Update in state manager
-        current_state = app_state.state_manager.get_current_state()
-        if current_state and order_id in current_state.pending_orders:
-            # Update the order in state
-            updated_orders = dict(current_state.pending_orders)
-            updated_orders[order_id] = order
-
-            # This is a simplified update - in production, use proper state event
-            logger.info(f"Order {order_id} updated in system state")
+        # Save to database
+        await db.commit()
+        await db.refresh(order_model)
 
         logger.info(f"Order {order_id} updated successfully")
+
+        # Convert to domain model for response
+        order = Order(
+            order_id=order_model.order_id,
+            customer_id=order_model.customer_id,
+            customer_name=order_model.customer_id,
+            pickup_location=Location(**order_model.pickup_location),
+            destination_city=order_model.destination_city,
+            destination_location=Location(**order_model.destination_location) if order_model.destination_location else None,
+            weight_tonnes=order_model.weight_tonnes,
+            volume_m3=order_model.volume_m3,
+            time_window=TimeWindow(
+                start_time=order_model.time_window_start,
+                end_time=order_model.time_window_end,
+            ),
+            delivery_window=TimeWindow(
+                start_time=order_model.delivery_window_start,
+                end_time=order_model.delivery_window_end,
+            ) if order_model.delivery_window_start else None,
+            priority=order_model.priority,
+            special_handling=order_model.special_handling,
+            customer_constraints=order_model.customer_constraints,
+            price_kes=order_model.price_kes,
+            status=order_model.status,
+            assigned_route_id=order_model.assigned_route_id,
+            created_at=order_model.created_at,
+            updated_at=order_model.updated_at,
+        )
 
         return OrderResponse(
             order_id=order.order_id,
@@ -344,7 +457,7 @@ async def update_order(
 @router.delete("/orders/{order_id}")
 async def delete_order(
     order_id: str,
-    app_state=Depends(get_app_state),
+    db: AsyncSession = Depends(get_db),
 ):
     """Delete (cancel) an order.
 
@@ -358,27 +471,33 @@ async def delete_order(
         Success message
     """
     try:
-        if order_id not in order_store:
+        # Load order from database
+        result = await db.execute(
+            select(OrderModel).where(OrderModel.order_id == order_id)
+        )
+        order_model = result.scalar_one_or_none()
+
+        if not order_model:
             raise HTTPException(status_code=404, detail=f"Order {order_id} not found")
 
-        order = order_store[order_id]
-
         # Check if order can be deleted
-        if order.assigned_route_id:
+        if order_model.assigned_route_id:
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot delete order assigned to route: {order.assigned_route_id}",
+                detail=f"Cannot delete order assigned to route: {order_model.assigned_route_id}",
             )
 
-        if order.status not in [OrderStatus.PENDING, OrderStatus.CANCELLED]:
+        if order_model.status not in [OrderStatus.PENDING, OrderStatus.CANCELLED]:
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot delete order in status: {order.status.value}",
+                detail=f"Cannot delete order in status: {order_model.status.value}",
             )
 
         # Mark as cancelled instead of deleting
-        order.status = OrderStatus.CANCELLED
-        order.updated_at = datetime.now()
+        order_model.status = OrderStatus.CANCELLED
+        order_model.updated_at = datetime.now()
+
+        await db.commit()
 
         logger.info(f"Order {order_id} cancelled successfully")
 

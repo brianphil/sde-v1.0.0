@@ -119,6 +119,31 @@ class OrderUpdateRequest(BaseModel):
 
 
 # Vehicle schemas
+class VehicleCreateRequest(BaseModel):
+    vehicle_type: str
+    capacity_weight_tonnes: float
+    capacity_volume_m3: float
+    current_location: LocationSchema
+    fuel_efficiency_km_per_liter: float = 8.5
+    fuel_cost_per_km: Optional[float] = None
+    driver_cost_per_hour: Optional[float] = None
+    driver_id: Optional[str] = None
+    maintenance_due: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class VehicleUpdateRequest(BaseModel):
+    current_location: Optional[LocationSchema] = None
+    status: Optional[VehicleStatusEnum] = None
+    fuel_cost_per_km: Optional[float] = None
+    driver_cost_per_hour: Optional[float] = None
+    driver_id: Optional[str] = None
+    maintenance_due: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class VehicleResponse(BaseModel):
     vehicle_id: str
     vehicle_type: str
@@ -133,6 +158,45 @@ class VehicleResponse(BaseModel):
     driver_cost_per_hour: Optional[float] = None
     driver_id: Optional[str] = None
     maintenance_due: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Customer schemas
+class CustomerCreateRequest(BaseModel):
+    customer_name: str
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    constraints: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    preferences: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CustomerUpdateRequest(BaseModel):
+    customer_name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    constraints: Optional[Dict[str, Any]] = None
+    preferences: Optional[Dict[str, Any]] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CustomerResponse(BaseModel):
+    customer_id: str
+    customer_name: str
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    constraints: Optional[Dict[str, Any]] = None
+    preferences: Optional[Dict[str, Any]] = None
+    created_at: datetime
+    updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 
