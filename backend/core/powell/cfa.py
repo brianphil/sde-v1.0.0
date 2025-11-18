@@ -22,6 +22,9 @@ from .consolidation_rules import (
     get_consolidation_opportunities,
 )
 
+# World-class learning components
+from ..learning.parameter_update import CFAParameterManager
+
 logger = logging.getLogger(__name__)
 
 
@@ -84,6 +87,16 @@ class CostFunctionApproximation:
         self.consolidation_constraints = consolidation_constraints or ConsolidationConstraints()
         self.validator = ConsolidationValidator(self.consolidation_constraints)
         self._initialize_distance_matrix()
+
+        # Initialize world-class parameter learning
+        # Get initial fuel and time costs (with reasonable defaults)
+        initial_fuel_cost = self.params.fuel_cost_per_km_by_vehicle.get("5T", 17.65)  # KES/km
+        initial_time_cost = self.params.driver_cost_per_hour_by_vehicle.get("5T", 300.0)  # KES/hour
+
+        self.parameter_manager = CFAParameterManager(
+            initial_fuel_cost=initial_fuel_cost,
+            initial_time_cost=initial_time_cost,
+        )
 
     def _initialize_distance_matrix(self):
         """Initialize approximate distance matrix for major locations."""
@@ -572,38 +585,61 @@ class CostFunctionApproximation:
         return total_cost
 
     def update_from_feedback(self, outcome: Dict[str, Any]):
-        """Update cost function parameters based on actual performance.
+        """Update cost function parameters using Adam optimization.
 
-        Uses prediction errors to adjust parameters (gradient descent on error).
+        Enhanced with:
+        - Adam optimizer (momentum + RMSprop)
+        - Convergence detection
+        - MAPE and RMSE accuracy tracking
         """
-        fuel_error = outcome.get("fuel_cost_error", 0.0)
-        time_error = outcome.get("time_error_minutes", 0.0)
+        # Extract outcome data
+        predicted_fuel = outcome.get("predicted_fuel_cost", 0.0)
+        actual_fuel = outcome.get("actual_fuel_cost", 0.0)
+        predicted_duration = outcome.get("predicted_duration_minutes", 0.0)
+        actual_duration = outcome.get("actual_duration_minutes", 0.0)
+        distance_km = outcome.get("actual_distance_km", 0.0)
 
-        # Exponential smoothing of prediction accuracy
-        alpha = 0.1  # Learning rate
+        # Update parameters using CFAParameterManager (Adam optimization)
+        if distance_km > 0 and actual_duration > 0:
+            self.parameter_manager.update_from_outcome(
+                predicted_fuel_cost=predicted_fuel,
+                actual_fuel_cost=actual_fuel,
+                predicted_duration_min=predicted_duration,
+                actual_duration_min=actual_duration,
+                distance_km=distance_km,
+            )
 
-        actual_accuracy_fuel = max(
-            0.0, 1.0 - abs(fuel_error) / (outcome.get("actual_fuel_cost", 1.0) + 1.0)
-        )
-        actual_accuracy_time = max(
-            0.0,
-            1.0 - abs(time_error) / (outcome.get("actual_duration_minutes", 1.0) + 1.0),
-        )
+            # Get updated parameters
+            updated_params = self.parameter_manager.get_cost_parameters()
 
-        self.params.prediction_accuracy_fuel = (
-            alpha * actual_accuracy_fuel
-            + (1 - alpha) * self.params.prediction_accuracy_fuel
-        )
-        self.params.prediction_accuracy_time = (
-            alpha * actual_accuracy_time
-            + (1 - alpha) * self.params.prediction_accuracy_time
-        )
+            # Update CostParameters with learned values
+            # Apply to all vehicle types (can be refined per-vehicle in production)
+            for vehicle_type in ["5T", "10T", "15T"]:
+                self.params.fuel_cost_per_km_by_vehicle[vehicle_type] = updated_params["fuel_cost_per_km"]
+                self.params.driver_cost_per_hour_by_vehicle[vehicle_type] = updated_params["driver_cost_per_hour"]
 
-        # Update cost parameters based on prediction error
-        # NOTE: CFA no longer maintains a single `fuel_per_km` scalar. Learning
-        # adjustments to costs should be applied to per-vehicle-type mappings or
-        # via vehicle-level overrides (stored in learning state). This demo
-        # currently only updates prediction accuracies.
+            # Get accuracies from parameter manager
+            accuracies = self.parameter_manager.get_prediction_accuracy()
+            self.params.prediction_accuracy_fuel = 1.0 - accuracies.get("fuel_mape", 0.0)
+            self.params.prediction_accuracy_time = 1.0 - accuracies.get("time_mape", 0.0)
+
+            # Check convergence
+            is_converged = self.parameter_manager.is_converged()
+            if is_converged:
+                logger.info(
+                    f"CFA: Parameters converged - fuel={updated_params['fuel_cost_per_km']:.4f} KES/km, "
+                    f"time={updated_params['driver_cost_per_hour']:.2f} KES/hr "
+                    f"(fuel_MAPE: {accuracies.get('fuel_mape', 0.0):.2%}, "
+                    f"time_MAPE: {accuracies.get('time_mape', 0.0):.2%})"
+                )
+
+            # Log detailed metrics
+            logger.debug(
+                f"CFA parameter update: fuel={updated_params['fuel_cost_per_km']:.4f} KES/km, "
+                f"time={updated_params['driver_cost_per_hour']:.2f} KES/hr, "
+                f"fuel_accuracy={self.params.prediction_accuracy_fuel:.2%}, "
+                f"time_accuracy={self.params.prediction_accuracy_time:.2%}"
+            )
 
         self.params.samples_observed += 1
         self.params.last_updated = datetime.now()

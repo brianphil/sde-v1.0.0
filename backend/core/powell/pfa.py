@@ -2,12 +2,16 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Dict, Optional, Callable, Any
+from typing import List, Dict, Optional, Callable, Any, Set
 import logging
 
 from ..models.state import SystemState
 from ..models.domain import Order, Vehicle, Route, RouteStatus, OrderStatus
 from ..models.decision import PolicyDecision, DecisionContext, DecisionType, ActionType
+
+# World-class learning components
+from ..learning.pattern_mining import PatternMiningCoordinator
+from ..learning.exploration import ExplorationCoordinator, EpsilonGreedy
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +66,23 @@ class PolicyFunctionApproximation:
         """Initialize PFA with optional learned rules."""
         self.rules: List[Rule] = []
         self.rule_index: Dict[str, Rule] = {}
+
+        # World-class pattern mining coordinator
+        self.pattern_coordinator = PatternMiningCoordinator(
+            min_support=0.1,  # 10% frequency threshold
+            min_confidence=0.5,  # 50% confidence threshold
+            min_lift=1.2,  # 20% better than random
+            max_rules=100,  # Keep top 100 rules
+        )
+
+        # Exploration for rule selection
+        self.rule_exploration = ExplorationCoordinator(
+            strategy=EpsilonGreedy(epsilon=0.1, epsilon_decay=0.995),
+            track_statistics=True,
+        )
+
+        # Track recent outcomes for pattern mining
+        self.recent_outcomes: List[Dict[str, Any]] = []
 
         if learning_state_dict:
             self._load_rules_from_dict(learning_state_dict)
@@ -155,13 +176,14 @@ class PolicyFunctionApproximation:
         self.rule_index[rule.rule_id] = rule
 
     def evaluate(self, state: SystemState, context: DecisionContext) -> PolicyDecision:
-        """Apply PFA to make a decision.
+        """Apply PFA to make a decision with exploration.
 
-        Workflow:
+        Enhanced workflow:
         1. Filter rules applicable to current context
-        2. Sort by confidence * support (rule quality)
-        3. Apply highest-confidence applicable rule
-        4. If no rule applies, return no-op decision
+        2. Compute rule quality scores (confidence * support * success_rate)
+        3. Use exploration strategy to select rule (ε-greedy)
+        4. Apply selected rule
+        5. If no rule applies, return no-op decision
         """
 
         # Find all applicable rules
@@ -169,12 +191,6 @@ class PolicyFunctionApproximation:
         for rule in self.rules:
             if rule.apply(state, context):
                 applicable_rules.append(rule)
-
-        # Sort by quality (confidence * support * historical success)
-        applicable_rules.sort(
-            key=lambda r: r.confidence * r.support * (r.get_success_rate() + 0.1),
-            reverse=True,
-        )
 
         if not applicable_rules:
             # No rules apply - return neutral decision
@@ -188,12 +204,24 @@ class PolicyFunctionApproximation:
                 reasoning="No learned rules applicable to this context",
             )
 
-        # Apply best rule
-        best_rule = applicable_rules[0]
-        best_rule.last_applied = datetime.now()
+        # Compute rule quality values for exploration
+        rule_values = {}
+        for rule in applicable_rules:
+            quality = rule.confidence * rule.support * (rule.get_success_rate() + 0.1)
+            rule_values[rule.rule_id] = quality
+
+        # Use exploration coordinator to select rule
+        selected_rule_id = self.rule_exploration.select_action(
+            actions=[r.rule_id for r in applicable_rules],
+            action_values=rule_values,
+        )
+
+        # Find the selected rule
+        selected_rule = next(r for r in applicable_rules if r.rule_id == selected_rule_id)
+        selected_rule.last_applied = datetime.now()
 
         # Generate routes based on rule recommendation
-        routes = self._generate_routes_for_rule(state, context, best_rule)
+        routes = self._generate_routes_for_rule(state, context, selected_rule)
 
         # Calculate expected value
         expected_value = sum(state.get_estimated_route_value(r) for r in routes)
@@ -201,19 +229,20 @@ class PolicyFunctionApproximation:
         return PolicyDecision(
             policy_name="PFA",
             decision_type=context.decision_type,
-            recommended_action=best_rule.action,
+            recommended_action=selected_rule.action,
             routes=routes,
-            confidence_score=best_rule.confidence
-            * (best_rule.get_success_rate() + 0.1),
+            confidence_score=selected_rule.confidence
+            * (selected_rule.get_success_rate() + 0.1),
             expected_value=expected_value,
-            reasoning=f"Applied learned rule: {best_rule.name}",
+            reasoning=f"Applied learned rule: {selected_rule.name} (exploration)",
             considered_alternatives=len(applicable_rules),
-            is_deterministic=True,
+            is_deterministic=False,  # Now uses exploration
             policy_parameters={
-                "rule_id": best_rule.rule_id,
-                "rule_name": best_rule.name,
-                "confidence": best_rule.confidence,
-                "support": best_rule.support,
+                "rule_id": selected_rule.rule_id,
+                "rule_name": selected_rule.name,
+                "confidence": selected_rule.confidence,
+                "support": selected_rule.support,
+                "exploration_rate": self.rule_exploration.get_exploration_rate(),
             },
         )
 
@@ -342,93 +371,232 @@ class PolicyFunctionApproximation:
     def mine_rules_from_state(
         self, state, min_support: int = 3, min_success_rate: float = 0.8
     ):
-        """Mine simple candidate rules from recent operational outcomes stored in state.
+        """Mine association rules using Apriori algorithm from recent outcomes.
 
-        Currently mines two types of patterns:
-        - Destination city consolidation rules (if many successful deliveries to same city)
-        - Special-handling rules (e.g., 'fresh_food')
+        Enhanced with world-class pattern mining:
+        - Apriori algorithm for frequent pattern discovery
+        - Association rule learning with confidence, support, lift
+        - Multi-feature pattern combinations
+        - Automatic rule quality scoring
 
-        When a pattern meets support and success thresholds, a new Rule is created
-        and added to the PFA rule set.
+        Extracts features from outcomes and discovers patterns like:
+        - "IF (destination=Eastleigh AND priority=high) THEN create_express_route"
+        - "IF (special_tag=fresh_food AND time=morning) THEN consolidate_orders"
         """
 
-        # Aggregate statistics from recent outcomes
-        city_counts = {}
-        city_success = {}
-        special_counts = {}
-        special_success = {}
+        if not hasattr(state, 'recent_outcomes') or len(state.recent_outcomes) < 20:
+            logger.debug(f"Not enough outcomes for pattern mining (need 20+, have {len(getattr(state, 'recent_outcomes', []))})")
+            return
 
+        # Convert outcomes to transactions for pattern mining
         for outcome in state.recent_outcomes:
-            # find associated route (completed routes map)
+            # Find associated route
             route = state.completed_routes.get(
                 outcome.route_id
             ) or state.active_routes.get(outcome.route_id)
             if not route:
                 continue
 
-            success = bool(outcome.on_time)
+            # Extract context features
+            features: Set[str] = set()
+            actions: Set[str] = set()
 
+            # Route-level features
+            if hasattr(outcome, 'route_id') and outcome.route_id:
+                features.add(f"route_exists")
+
+            # Time-based features
+            if hasattr(state.environment, 'current_time'):
+                hour = state.environment.current_time.hour
+                if 6 <= hour < 12:
+                    features.add("time_morning")
+                elif 12 <= hour < 18:
+                    features.add("time_afternoon")
+                else:
+                    features.add("time_evening")
+
+                # Day of week
+                day = state.environment.current_time.strftime("%A")
+                features.add(f"day_{day}")
+
+            # Extract order-level features
             for oid in route.order_ids:
-                order = state.pending_orders.get(oid) or None
+                order = state.pending_orders.get(oid)
                 if not order:
-                    # If order not found in pending, try customers or ignore
                     continue
 
-                city = order.destination_city
-                city_counts[city] = city_counts.get(city, 0) + 1
-                city_success[city] = city_success.get(city, 0) + (1 if success else 0)
+                # Destination city
+                if hasattr(order, 'destination_city'):
+                    city_name = getattr(order.destination_city, 'value', str(order.destination_city))
+                    features.add(f"destination_{city_name}")
 
-                for tag in order.special_handling:
-                    special_counts[tag] = special_counts.get(tag, 0) + 1
-                    special_success[tag] = special_success.get(tag, 0) + (
-                        1 if success else 0
-                    )
+                # Priority
+                if hasattr(order, 'priority'):
+                    if order.priority >= 2:
+                        features.add("priority_high")
+                    elif order.priority == 1:
+                        features.add("priority_medium")
+                    else:
+                        features.add("priority_low")
 
-        # Create rules for cities
-        for city, count in city_counts.items():
-            success_rate = city_success.get(city, 0) / count if count > 0 else 0.0
-            if count >= min_support and success_rate >= min_success_rate:
-                # Build condition closure
-                def make_city_condition(target_city):
-                    return lambda s, c: any(
-                        o.destination_city == target_city
-                        for o in c.orders_to_consider.values()
-                    )
+                # Special handling
+                if hasattr(order, 'special_handling') and order.special_handling:
+                    for tag in order.special_handling:
+                        features.add(f"tag_{tag}")
 
-                cond = make_city_condition(city)
-                rule_id = f"rule_city_{str(city)}"
-                if rule_id not in self.rule_index:
-                    new_rule = Rule(
-                        rule_id=rule_id,
-                        name=f"Consolidate to {city.value}",
-                        conditions=[cond],
-                        action=ActionType.CREATE_ROUTE,
-                        confidence=success_rate,
-                        support=float(count) / max(1, len(state.recent_outcomes)),
-                    )
-                    self.add_rule(new_rule)
+                # Order value (binned)
+                if hasattr(order, 'price_kes'):
+                    if order.price_kes > 5000:
+                        features.add("value_high")
+                    elif order.price_kes > 2000:
+                        features.add("value_medium")
+                    else:
+                        features.add("value_low")
 
-        # Create rules for special handling tags
-        for tag, count in special_counts.items():
-            success_rate = special_success.get(tag, 0) / count if count > 0 else 0.0
-            if count >= min_support and success_rate >= min_success_rate:
+            # Extract action features (what was done)
+            if hasattr(outcome, 'on_time') and outcome.on_time:
+                actions.add("delivered_on_time")
+            else:
+                actions.add("delivered_late")
 
-                def make_tag_condition(t):
-                    return lambda s, c: any(
-                        t in o.special_handling for o in c.orders_to_consider.values()
-                    )
+            if hasattr(route, 'vehicle_type'):
+                actions.add(f"vehicle_{route.vehicle_type}")
 
-                rule_id = f"rule_tag_{tag}"
-                if rule_id not in self.rule_index:
-                    new_rule = Rule(
-                        rule_id=rule_id,
-                        name=f"Handle tag {tag}",
-                        conditions=[make_tag_condition(tag)],
-                        action=ActionType.CREATE_ROUTE,
-                        confidence=success_rate,
-                        support=float(count) / max(1, len(state.recent_outcomes)),
-                    )
-                    self.add_rule(new_rule)
+            if len(route.order_ids) > 3:
+                actions.add("consolidated_route")
+            elif len(route.order_ids) == 1:
+                actions.add("single_order_route")
+            else:
+                actions.add("small_batch_route")
+
+            # Determine reward (success metric)
+            success = bool(outcome.on_time) if hasattr(outcome, 'on_time') else False
+            reward = 1.0 if success else -0.5
+
+            # Add transaction to pattern mining coordinator
+            self.pattern_coordinator.add_transaction(
+                transaction_id=outcome.route_id,
+                features=features,
+                actions=actions,
+                context={'outcome': outcome, 'route': route},
+                reward=reward,
+            )
+
+            # Store in recent outcomes
+            outcome_dict = {
+                'route_id': outcome.route_id,
+                'on_time': success,
+                'features': list(features),
+                'actions': list(actions),
+                'reward': reward,
+            }
+            self.recent_outcomes.append(outcome_dict)
+
+            # Limit history
+            if len(self.recent_outcomes) > 1000:
+                self.recent_outcomes.pop(0)
+
+        # Mine patterns and generate rules
+        num_rules = self.pattern_coordinator.mine_and_update_rules(force=len(state.recent_outcomes) >= 20)
+
+        if num_rules > 0:
+            logger.info(f"PFA: Mined {num_rules} association rules using Apriori algorithm")
+
+            # Convert mined rules to PFA Rule objects
+            self._convert_mined_rules_to_pfa_rules()
+
+    def _convert_mined_rules_to_pfa_rules(self):
+        """Convert mined association rules to PFA Rule objects."""
+        for assoc_rule in self.pattern_coordinator.active_rules[:20]:  # Top 20 rules
+            if not assoc_rule.active:
+                continue
+
+            # Skip if already exists
+            if assoc_rule.rule_id in self.rule_index:
+                # Update existing rule performance
+                existing = self.rule_index[assoc_rule.rule_id]
+                existing.confidence = assoc_rule.confidence
+                existing.support = assoc_rule.support
+                continue
+
+            # Create condition functions from antecedent
+            conditions = []
+            rule_name_parts = []
+
+            for item in sorted(assoc_rule.antecedent):
+                item_str = str(item)
+
+                if item_str.startswith("destination_"):
+                    city_name = item_str.replace("destination_", "")
+                    rule_name_parts.append(f"dest={city_name}")
+
+                    def make_dest_condition(city):
+                        return lambda s, c, city=city: any(
+                            getattr(o.destination_city, "value", None) == city
+                            or getattr(o.destination_city, "name", None) == city
+                            for o in c.orders_to_consider.values()
+                        )
+
+                    conditions.append(make_dest_condition(city_name))
+
+                elif item_str.startswith("tag_"):
+                    tag = item_str.replace("tag_", "")
+                    rule_name_parts.append(f"tag={tag}")
+
+                    def make_tag_condition(t):
+                        return lambda s, c, t=t: any(
+                            t in (o.special_handling if o.special_handling else [])
+                            for o in c.orders_to_consider.values()
+                        )
+
+                    conditions.append(make_tag_condition(tag))
+
+                elif item_str == "priority_high":
+                    rule_name_parts.append("high_priority")
+
+                    def priority_high_condition(s, c):
+                        return any(o.priority >= 2 for o in c.orders_to_consider.values())
+
+                    conditions.append(priority_high_condition)
+
+                elif item_str.startswith("time_"):
+                    time_period = item_str.replace("time_", "")
+                    rule_name_parts.append(f"time={time_period}")
+                    # Time conditions are harder to check from context, skip for now
+
+            # Determine action from consequent
+            action_type = ActionType.CREATE_ROUTE  # Default
+            for item in assoc_rule.consequent:
+                item_str = str(item)
+                if "consolidated" in item_str:
+                    action_type = ActionType.CREATE_ROUTE
+                    rule_name_parts.append("→ consolidate")
+                elif "single_order" in item_str:
+                    action_type = ActionType.CREATE_ROUTE
+                    rule_name_parts.append("→ immediate")
+
+            # Create human-readable name
+            if not rule_name_parts:
+                rule_name_parts = ["Generic rule"]
+            rule_name = " ".join(rule_name_parts)
+
+            # Create PFA Rule
+            new_rule = Rule(
+                rule_id=assoc_rule.rule_id,
+                name=rule_name,
+                conditions=conditions if conditions else [lambda s, c: True],  # Always-true fallback
+                action=action_type,
+                confidence=assoc_rule.confidence,
+                support=assoc_rule.support,
+                successful_applications=assoc_rule.successes,
+                failed_applications=assoc_rule.failures,
+            )
+
+            self.add_rule(new_rule)
+            logger.debug(
+                f"Created PFA rule: {rule_name} "
+                f"(confidence={assoc_rule.confidence:.2f}, lift={assoc_rule.lift:.2f})"
+            )
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dictionary for storage."""
