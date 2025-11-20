@@ -6,6 +6,7 @@ from datetime import datetime
 import logging
 import math
 import numpy as np
+import uuid
 
 
 import torch
@@ -18,7 +19,7 @@ from ..models.state import SystemState
 from ..models.domain import Order, Vehicle, Route
 from ..models.decision import PolicyDecision, DecisionContext, DecisionType, ActionType
 
-# World-class learning components
+# sde learning components
 from ..learning.experience_replay import ExperienceReplayCoordinator
 from ..learning.regularization import RegularizationCoordinator
 from ..learning.lr_scheduling import LRSchedulerCoordinator
@@ -125,7 +126,7 @@ class ValueFunctionApproximation:
         self.total_loss = 0.0
         self.last_updated = datetime.now()
 
-        # World-class learning components
+        # sde learning components
         self.experience_coordinator = ExperienceReplayCoordinator(
             buffer_type="prioritized",
             capacity=10000,
@@ -433,7 +434,7 @@ class ValueFunctionApproximation:
             return False
 
     def train_from_buffer(self, batch_size: int = 32, epochs: int = 1):
-        """Train the VFA from the replay buffer with world-class enhancements.
+        """Train the VFA from the replay buffer with sde enhancements.
 
         Enhancements:
         - Prioritized experience replay with importance sampling
@@ -578,7 +579,7 @@ class ValueFunctionApproximation:
                         break
 
             else:
-                # Fallback: simple linear SGD update (no world-class features)
+                # Fallback: simple linear SGD update (no sde features)
                 import random
 
                 samples = random.sample(
@@ -709,7 +710,7 @@ class ValueFunctionApproximation:
         self, state: SystemState, orders: Dict[str, Order], vehicle: Vehicle
     ) -> Route:
         """Create simple route from orders and vehicle."""
-        route_id = f"route_vfa_{int(datetime.now().timestamp())}"
+        route_id = f"route_vfa_{uuid.uuid4().hex[:12]}"
 
         route = Route(
             route_id=route_id,

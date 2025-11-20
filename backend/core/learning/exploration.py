@@ -1,6 +1,6 @@
 """Exploration strategies for balancing exploration-exploitation tradeoff.
 
-This module implements world-class exploration algorithms for reinforcement learning:
+This module implements sde exploration algorithms for reinforcement learning:
 
 - Epsilon-greedy (ε-greedy): Simple random exploration
 - Upper Confidence Bound (UCB): Optimistic exploration with confidence bounds
@@ -149,12 +149,16 @@ class EpsilonGreedy(ExplorationStrategy):
         # Explore with probability epsilon
         if random.random() < self.epsilon:
             action = random.choice(actions)
-            logger.debug(f"Exploring: randomly selected action '{action}' (ε={self.epsilon:.3f})")
+            logger.debug(
+                f"Exploring: randomly selected action '{action}' (ε={self.epsilon:.3f})"
+            )
             return action
 
         # Exploit: choose action with highest value
         best_action = max(actions, key=lambda a: action_values.get(a, 0.0))
-        logger.debug(f"Exploiting: selected best action '{best_action}' (value={action_values.get(best_action, 0.0):.3f})")
+        logger.debug(
+            f"Exploiting: selected best action '{best_action}' (value={action_values.get(best_action, 0.0):.3f})"
+        )
         return best_action
 
     def _update_epsilon(self, timestep: int):
@@ -162,19 +166,21 @@ class EpsilonGreedy(ExplorationStrategy):
         if self.decay_type == "exponential":
             # Exponential decay: ε_t = ε_0 * decay^t
             self.epsilon = max(
-                self.epsilon_min,
-                self.epsilon_init * (self.epsilon_decay ** timestep)
+                self.epsilon_min, self.epsilon_init * (self.epsilon_decay**timestep)
             )
         elif self.decay_type == "linear":
             # Linear decay: ε_t = ε_0 - (ε_0 - ε_min) * t / T
             decay_steps = 10000  # Total steps to reach epsilon_min
             self.epsilon = max(
                 self.epsilon_min,
-                self.epsilon_init - (self.epsilon_init - self.epsilon_min) * timestep / decay_steps
+                self.epsilon_init
+                - (self.epsilon_init - self.epsilon_min) * timestep / decay_steps,
             )
         elif self.decay_type == "inverse":
             # Inverse decay: ε_t = ε_min + (ε_0 - ε_min) / (1 + t)
-            self.epsilon = self.epsilon_min + (self.epsilon_init - self.epsilon_min) / (1 + timestep)
+            self.epsilon = self.epsilon_min + (self.epsilon_init - self.epsilon_min) / (
+                1 + timestep
+            )
 
     def get_exploration_rate(self, timestep: int) -> float:
         """Get current exploration rate."""
@@ -222,7 +228,11 @@ class UpperConfidenceBound(ExplorationStrategy):
             raise ValueError("No actions available")
 
         # If any action hasn't been tried, try it
-        untried_actions = [a for a in actions if action_stats.get(a, ActionStats(a)).times_selected == 0]
+        untried_actions = [
+            a
+            for a in actions
+            if action_stats.get(a, ActionStats(a)).times_selected == 0
+        ]
         if untried_actions:
             action = random.choice(untried_actions)
             logger.debug(f"UCB: Trying untried action '{action}'")
@@ -332,7 +342,7 @@ class BoltzmannExploration(ExplorationStrategy):
         """Decay temperature over time."""
         self.temperature = max(
             self.temperature_min,
-            self.temperature_init * (self.temperature_decay ** timestep)
+            self.temperature_init * (self.temperature_decay**timestep),
         )
 
     def get_exploration_rate(self, timestep: int) -> float:
@@ -463,7 +473,9 @@ class AdaptiveExploration(ExplorationStrategy):
 
         # Use current strategy
         current_strategy = self.strategies[self.current_strategy_idx]
-        action = current_strategy.select_action(actions, action_values, action_stats, timestep)
+        action = current_strategy.select_action(
+            actions, action_values, action_stats, timestep
+        )
 
         logger.debug(
             f"Adaptive: Using {self.strategy_names[self.current_strategy_idx]} "
@@ -491,7 +503,7 @@ class AdaptiveExploration(ExplorationStrategy):
         """Update which strategy to use based on performance."""
         # Choose strategy with highest average reward
         best_strategy_idx = 0
-        best_avg_reward = -float('inf')
+        best_avg_reward = -float("inf")
 
         for idx, name in enumerate(self.strategy_names):
             stats = self.strategy_stats[name]
@@ -625,7 +637,8 @@ class ExplorationCoordinator:
             "total_exploitations": self.total_exploitations,
             "exploration_ratio": (
                 self.total_explorations / total_selections
-                if total_selections > 0 else 0.0
+                if total_selections > 0
+                else 0.0
             ),
             "strategy": type(self.strategy).__name__,
             "action_count": len(self.action_stats),
@@ -636,5 +649,5 @@ class ExplorationCoordinator:
                     "reward_variance": stats.reward_variance,
                 }
                 for action, stats in self.action_stats.items()
-            }
+            },
         }

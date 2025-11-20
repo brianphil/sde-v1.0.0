@@ -4,12 +4,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Dict, Optional, Callable, Any, Set
 import logging
+import uuid
 
 from ..models.state import SystemState
 from ..models.domain import Order, Vehicle, Route, RouteStatus, OrderStatus
 from ..models.decision import PolicyDecision, DecisionContext, DecisionType, ActionType
 
-# World-class learning components
+# sde learning components
 from ..learning.pattern_mining import PatternMiningCoordinator
 from ..learning.exploration import ExplorationCoordinator, EpsilonGreedy
 
@@ -67,7 +68,7 @@ class PolicyFunctionApproximation:
         self.rules: List[Rule] = []
         self.rule_index: Dict[str, Rule] = {}
 
-        # World-class pattern mining coordinator
+        # sde pattern mining coordinator
         self.pattern_coordinator = PatternMiningCoordinator(
             min_support=0.1,  # 10% frequency threshold
             min_confidence=0.5,  # 50% confidence threshold
@@ -217,7 +218,9 @@ class PolicyFunctionApproximation:
         )
 
         # Find the selected rule
-        selected_rule = next(r for r in applicable_rules if r.rule_id == selected_rule_id)
+        selected_rule = next(
+            r for r in applicable_rules if r.rule_id == selected_rule_id
+        )
         selected_rule.last_applied = datetime.now()
 
         # Generate routes based on rule recommendation
@@ -310,7 +313,7 @@ class PolicyFunctionApproximation:
         self, state: SystemState, order: Order, vehicle: Vehicle
     ) -> Route:
         """Create simple route for single order."""
-        route_id = f"route_{len(state.active_routes)}_{int(datetime.now().timestamp())}"
+        route_id = f"route_pfa_{uuid.uuid4().hex[:12]}"
 
         route = Route(
             route_id=route_id,
@@ -330,7 +333,7 @@ class PolicyFunctionApproximation:
         self, state: SystemState, orders: Dict[str, Order], vehicle: Vehicle
     ) -> Route:
         """Create route from group of orders."""
-        route_id = f"route_{len(state.active_routes)}_{int(datetime.now().timestamp())}"
+        route_id = f"route_pfa_{uuid.uuid4().hex[:12]}"
 
         route = Route(
             route_id=route_id,
@@ -373,7 +376,7 @@ class PolicyFunctionApproximation:
     ):
         """Mine association rules using Apriori algorithm from recent outcomes.
 
-        Enhanced with world-class pattern mining:
+        Enhanced with sde pattern mining:
         - Apriori algorithm for frequent pattern discovery
         - Association rule learning with confidence, support, lift
         - Multi-feature pattern combinations
@@ -384,8 +387,10 @@ class PolicyFunctionApproximation:
         - "IF (special_tag=fresh_food AND time=morning) THEN consolidate_orders"
         """
 
-        if not hasattr(state, 'recent_outcomes') or len(state.recent_outcomes) < 20:
-            logger.debug(f"Not enough outcomes for pattern mining (need 20+, have {len(getattr(state, 'recent_outcomes', []))})")
+        if not hasattr(state, "recent_outcomes") or len(state.recent_outcomes) < 20:
+            logger.debug(
+                f"Not enough outcomes for pattern mining (need 20+, have {len(getattr(state, 'recent_outcomes', []))})"
+            )
             return
 
         # Convert outcomes to transactions for pattern mining
@@ -402,11 +407,11 @@ class PolicyFunctionApproximation:
             actions: Set[str] = set()
 
             # Route-level features
-            if hasattr(outcome, 'route_id') and outcome.route_id:
+            if hasattr(outcome, "route_id") and outcome.route_id:
                 features.add(f"route_exists")
 
             # Time-based features
-            if hasattr(state.environment, 'current_time'):
+            if hasattr(state.environment, "current_time"):
                 hour = state.environment.current_time.hour
                 if 6 <= hour < 12:
                     features.add("time_morning")
@@ -426,12 +431,14 @@ class PolicyFunctionApproximation:
                     continue
 
                 # Destination city
-                if hasattr(order, 'destination_city'):
-                    city_name = getattr(order.destination_city, 'value', str(order.destination_city))
+                if hasattr(order, "destination_city"):
+                    city_name = getattr(
+                        order.destination_city, "value", str(order.destination_city)
+                    )
                     features.add(f"destination_{city_name}")
 
                 # Priority
-                if hasattr(order, 'priority'):
+                if hasattr(order, "priority"):
                     if order.priority >= 2:
                         features.add("priority_high")
                     elif order.priority == 1:
@@ -440,12 +447,12 @@ class PolicyFunctionApproximation:
                         features.add("priority_low")
 
                 # Special handling
-                if hasattr(order, 'special_handling') and order.special_handling:
+                if hasattr(order, "special_handling") and order.special_handling:
                     for tag in order.special_handling:
                         features.add(f"tag_{tag}")
 
                 # Order value (binned)
-                if hasattr(order, 'price_kes'):
+                if hasattr(order, "price_kes"):
                     if order.price_kes > 5000:
                         features.add("value_high")
                     elif order.price_kes > 2000:
@@ -454,12 +461,12 @@ class PolicyFunctionApproximation:
                         features.add("value_low")
 
             # Extract action features (what was done)
-            if hasattr(outcome, 'on_time') and outcome.on_time:
+            if hasattr(outcome, "on_time") and outcome.on_time:
                 actions.add("delivered_on_time")
             else:
                 actions.add("delivered_late")
 
-            if hasattr(route, 'vehicle_type'):
+            if hasattr(route, "vehicle_type"):
                 actions.add(f"vehicle_{route.vehicle_type}")
 
             if len(route.order_ids) > 3:
@@ -470,7 +477,7 @@ class PolicyFunctionApproximation:
                 actions.add("small_batch_route")
 
             # Determine reward (success metric)
-            success = bool(outcome.on_time) if hasattr(outcome, 'on_time') else False
+            success = bool(outcome.on_time) if hasattr(outcome, "on_time") else False
             reward = 1.0 if success else -0.5
 
             # Add transaction to pattern mining coordinator
@@ -478,17 +485,17 @@ class PolicyFunctionApproximation:
                 transaction_id=outcome.route_id,
                 features=features,
                 actions=actions,
-                context={'outcome': outcome, 'route': route},
+                context={"outcome": outcome, "route": route},
                 reward=reward,
             )
 
             # Store in recent outcomes
             outcome_dict = {
-                'route_id': outcome.route_id,
-                'on_time': success,
-                'features': list(features),
-                'actions': list(actions),
-                'reward': reward,
+                "route_id": outcome.route_id,
+                "on_time": success,
+                "features": list(features),
+                "actions": list(actions),
+                "reward": reward,
             }
             self.recent_outcomes.append(outcome_dict)
 
@@ -497,10 +504,14 @@ class PolicyFunctionApproximation:
                 self.recent_outcomes.pop(0)
 
         # Mine patterns and generate rules
-        num_rules = self.pattern_coordinator.mine_and_update_rules(force=len(state.recent_outcomes) >= 20)
+        num_rules = self.pattern_coordinator.mine_and_update_rules(
+            force=len(state.recent_outcomes) >= 20
+        )
 
         if num_rules > 0:
-            logger.info(f"PFA: Mined {num_rules} association rules using Apriori algorithm")
+            logger.info(
+                f"PFA: Mined {num_rules} association rules using Apriori algorithm"
+            )
 
             # Convert mined rules to PFA Rule objects
             self._convert_mined_rules_to_pfa_rules()
@@ -555,7 +566,9 @@ class PolicyFunctionApproximation:
                     rule_name_parts.append("high_priority")
 
                     def priority_high_condition(s, c):
-                        return any(o.priority >= 2 for o in c.orders_to_consider.values())
+                        return any(
+                            o.priority >= 2 for o in c.orders_to_consider.values()
+                        )
 
                     conditions.append(priority_high_condition)
 
@@ -584,7 +597,9 @@ class PolicyFunctionApproximation:
             new_rule = Rule(
                 rule_id=assoc_rule.rule_id,
                 name=rule_name,
-                conditions=conditions if conditions else [lambda s, c: True],  # Always-true fallback
+                conditions=(
+                    conditions if conditions else [lambda s, c: True]
+                ),  # Always-true fallback
                 action=action_type,
                 confidence=assoc_rule.confidence,
                 support=assoc_rule.support,

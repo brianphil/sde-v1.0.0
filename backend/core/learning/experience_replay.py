@@ -1,6 +1,6 @@
 """Experience replay for efficient reinforcement learning.
 
-This module implements world-class experience replay mechanisms:
+This module implements sde experience replay mechanisms:
 
 - Basic replay buffer with uniform sampling
 - Prioritized experience replay (PER) with proportional prioritization
@@ -46,8 +46,8 @@ class SumTreeNode:
     """Node in sum tree for efficient prioritized sampling."""
 
     priority: float = 0.0
-    left: Optional['SumTreeNode'] = None
-    right: Optional['SumTreeNode'] = None
+    left: Optional["SumTreeNode"] = None
+    right: Optional["SumTreeNode"] = None
     data_index: Optional[int] = None  # Only leaf nodes store data
 
 
@@ -255,7 +255,9 @@ class PrioritizedReplayBuffer:
         self.tree.add(priority, experience)
         self.total_added += 1
 
-    def sample(self, batch_size: int) -> Tuple[List[Experience], np.ndarray, np.ndarray]:
+    def sample(
+        self, batch_size: int
+    ) -> Tuple[List[Experience], np.ndarray, np.ndarray]:
         """Sample batch of experiences with importance sampling weights.
 
         Args:
@@ -490,8 +492,7 @@ class ExperienceReplayCoordinator:
             self.buffer.add(experience)
 
     def sample_batch(
-        self,
-        batch_size: Optional[int] = None
+        self, batch_size: Optional[int] = None
     ) -> Tuple[List[Experience], Optional[np.ndarray], Optional[np.ndarray]]:
         """Sample batch of experiences.
 
@@ -553,27 +554,35 @@ class ExperienceReplayCoordinator:
         stats = {
             "buffer_type": self.buffer_type,
             "buffer_size": buffer_size,
-            "capacity": self.buffer.capacity if hasattr(self.buffer, 'capacity') else 0,
-            "utilization": buffer_size / self.buffer.capacity if hasattr(self.buffer, 'capacity') and self.buffer.capacity > 0 else 0.0,
-            "total_added": self.buffer.total_added if hasattr(self.buffer, 'total_added') else 0,
+            "capacity": self.buffer.capacity if hasattr(self.buffer, "capacity") else 0,
+            "utilization": (
+                buffer_size / self.buffer.capacity
+                if hasattr(self.buffer, "capacity") and self.buffer.capacity > 0
+                else 0.0
+            ),
+            "total_added": (
+                self.buffer.total_added if hasattr(self.buffer, "total_added") else 0
+            ),
             "total_samples": self.total_samples,
             "batch_size": self.batch_size,
         }
 
         # Add prioritized replay specific stats
         if isinstance(self.buffer, PrioritizedReplayBuffer):
-            stats.update({
-                "alpha": self.buffer.alpha,
-                "beta": self.buffer.beta,
-                "max_priority": self.buffer.max_priority,
-                "total_priority": self.buffer.tree.total_priority,
-            })
+            stats.update(
+                {
+                    "alpha": self.buffer.alpha,
+                    "beta": self.buffer.beta,
+                    "max_priority": self.buffer.max_priority,
+                    "total_priority": self.buffer.tree.total_priority,
+                }
+            )
 
         return stats
 
     def clear(self):
         """Clear all experiences from buffer."""
-        if hasattr(self.buffer, 'clear'):
+        if hasattr(self.buffer, "clear"):
             self.buffer.clear()
         else:
             # For PrioritizedReplayBuffer, recreate tree

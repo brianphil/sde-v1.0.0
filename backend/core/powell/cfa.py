@@ -5,6 +5,7 @@ from typing import List, Dict, Optional, Tuple, Any
 from datetime import datetime
 import logging
 import math
+import uuid
 
 from ..models.state import SystemState
 from ..models.domain import (
@@ -22,7 +23,7 @@ from .consolidation_rules import (
     get_consolidation_opportunities,
 )
 
-# World-class learning components
+# sde learning components
 from ..learning.parameter_update import CFAParameterManager
 
 logger = logging.getLogger(__name__)
@@ -84,14 +85,20 @@ class CostFunctionApproximation:
     ):
         """Initialize CFA with cost parameters and consolidation rules."""
         self.params = parameters or CostParameters()
-        self.consolidation_constraints = consolidation_constraints or ConsolidationConstraints()
+        self.consolidation_constraints = (
+            consolidation_constraints or ConsolidationConstraints()
+        )
         self.validator = ConsolidationValidator(self.consolidation_constraints)
         self._initialize_distance_matrix()
 
-        # Initialize world-class parameter learning
+        # Initialize sde parameter learning
         # Get initial fuel and time costs (with reasonable defaults)
-        initial_fuel_cost = self.params.fuel_cost_per_km_by_vehicle.get("5T", 17.65)  # KES/km
-        initial_time_cost = self.params.driver_cost_per_hour_by_vehicle.get("5T", 300.0)  # KES/hour
+        initial_fuel_cost = self.params.fuel_cost_per_km_by_vehicle.get(
+            "5T", 17.65
+        )  # KES/km
+        initial_time_cost = self.params.driver_cost_per_hour_by_vehicle.get(
+            "5T", 300.0
+        )  # KES/hour
 
         self.parameter_manager = CFAParameterManager(
             initial_fuel_cost=initial_fuel_cost,
@@ -277,8 +284,7 @@ class CostFunctionApproximation:
 
         # Step 1: Identify consolidation opportunities
         consolidation_groups = get_consolidation_opportunities(
-            context.orders_to_consider,
-            self.consolidation_constraints
+            context.orders_to_consider, self.consolidation_constraints
         )
 
         logger.info(f"Found {len(consolidation_groups)} consolidation groups")
@@ -288,7 +294,11 @@ class CostFunctionApproximation:
             if any(oid in assigned_orders for oid in order_ids):
                 continue  # Skip if orders already assigned
 
-            group_orders = [context.orders_to_consider[oid] for oid in order_ids if oid in context.orders_to_consider]
+            group_orders = [
+                context.orders_to_consider[oid]
+                for oid in order_ids
+                if oid in context.orders_to_consider
+            ]
 
             if not group_orders:
                 continue
@@ -299,13 +309,13 @@ class CostFunctionApproximation:
 
             # Find optimal vehicle for this load
             vehicle = self.validator.get_optimal_vehicle_for_load(
-                total_weight,
-                total_volume,
-                list(context.vehicles_available.values())
+                total_weight, total_volume, list(context.vehicles_available.values())
             )
 
             if not vehicle:
-                logger.debug(f"No suitable vehicle found for group {group_key} ({total_weight:.1f}T, {total_volume:.1f}m³)")
+                logger.debug(
+                    f"No suitable vehicle found for group {group_key} ({total_weight:.1f}T, {total_volume:.1f}m³)"
+                )
                 continue
 
             # Create route
@@ -319,24 +329,31 @@ class CostFunctionApproximation:
             if is_valid:
                 routes.append(route)
                 assigned_orders.update(order_ids)
-                logger.info(f"✅ Created consolidated route {route.route_id} with {len(group_orders)} orders on {vehicle.vehicle_type} truck")
+                logger.info(
+                    f"✅ Created consolidated route {route.route_id} with {len(group_orders)} orders on {vehicle.vehicle_type} truck"
+                )
             else:
-                logger.debug(f"Route validation failed for group {group_key}: {reasoning}")
+                logger.debug(
+                    f"Route validation failed for group {group_key}: {reasoning}"
+                )
 
         # Step 3: Handle remaining orders (not consolidated)
         remaining_orders = {
-            oid: order for oid, order in context.orders_to_consider.items()
+            oid: order
+            for oid, order in context.orders_to_consider.items()
             if oid not in assigned_orders
         }
 
         if remaining_orders:
-            logger.info(f"Processing {len(remaining_orders)} remaining orders individually")
+            logger.info(
+                f"Processing {len(remaining_orders)} remaining orders individually"
+            )
             for order in remaining_orders.values():
                 # Find smallest vehicle that meets utilization requirements
                 vehicle = self.validator.get_optimal_vehicle_for_load(
                     order.weight_tonnes,
                     order.volume_m3,
-                    list(context.vehicles_available.values())
+                    list(context.vehicles_available.values()),
                 )
 
                 if vehicle:
@@ -347,9 +364,13 @@ class CostFunctionApproximation:
 
                     if is_valid:
                         routes.append(route)
-                        logger.info(f"✅ Created single-order route {route.route_id} on {vehicle.vehicle_type} truck")
+                        logger.info(
+                            f"✅ Created single-order route {route.route_id} on {vehicle.vehicle_type} truck"
+                        )
                     else:
-                        logger.warning(f"❌ Cannot create route for order {order.order_id}: {reasoning}")
+                        logger.warning(
+                            f"❌ Cannot create route for order {order.order_id}: {reasoning}"
+                        )
 
         return routes if routes else None
 
@@ -414,9 +435,7 @@ class CostFunctionApproximation:
         self, state: SystemState, orders: List[Order], vehicle: Vehicle
     ) -> Route:
         """Create optimized route for list of orders."""
-        route_id = (
-            f"route_cfa_{len(state.active_routes)}_{int(datetime.now().timestamp())}"
-        )
+        route_id = f"route_cfa_{uuid.uuid4().hex[:12]}"
 
         # Sequence orders (simple: by destination, then by pickup location)
         orders_sorted = sorted(
@@ -615,13 +634,21 @@ class CostFunctionApproximation:
             # Update CostParameters with learned values
             # Apply to all vehicle types (can be refined per-vehicle in production)
             for vehicle_type in ["5T", "10T", "15T"]:
-                self.params.fuel_cost_per_km_by_vehicle[vehicle_type] = updated_params["fuel_cost_per_km"]
-                self.params.driver_cost_per_hour_by_vehicle[vehicle_type] = updated_params["driver_cost_per_hour"]
+                self.params.fuel_cost_per_km_by_vehicle[vehicle_type] = updated_params[
+                    "fuel_cost_per_km"
+                ]
+                self.params.driver_cost_per_hour_by_vehicle[vehicle_type] = (
+                    updated_params["driver_cost_per_hour"]
+                )
 
             # Get accuracies from parameter manager
             accuracies = self.parameter_manager.get_prediction_accuracy()
-            self.params.prediction_accuracy_fuel = 1.0 - accuracies.get("fuel_mape", 0.0)
-            self.params.prediction_accuracy_time = 1.0 - accuracies.get("time_mape", 0.0)
+            self.params.prediction_accuracy_fuel = 1.0 - accuracies.get(
+                "fuel_mape", 0.0
+            )
+            self.params.prediction_accuracy_time = 1.0 - accuracies.get(
+                "time_mape", 0.0
+            )
 
             # Check convergence
             is_converged = self.parameter_manager.is_converged()

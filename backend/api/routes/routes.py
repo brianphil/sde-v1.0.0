@@ -184,6 +184,25 @@ async def list_routes(
         )
 
 
+@router.get("/routes/active", response_model=List[RouteResponse])
+async def list_active_routes(
+    db: AsyncSession = Depends(get_db),
+):
+    """Get all active routes (in_progress status)."""
+    from backend.api.schemas import RouteStatusEnum
+    return await list_routes(status=RouteStatusEnum.IN_PROGRESS, db=db)
+
+
+@router.get("/routes/completed", response_model=List[RouteResponse])
+async def list_completed_routes(
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get all completed routes."""
+    from backend.api.schemas import RouteStatusEnum
+    return await list_routes(status=RouteStatusEnum.COMPLETED, limit=limit, db=db)
+
+
 @router.get("/routes/{route_id}", response_model=RouteResponse)
 async def get_route(
     route_id: str,

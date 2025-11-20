@@ -1,8 +1,8 @@
 # Learning Integration Plan
 
-## Current Status: World-Class Components Created But Not Integrated
+## Current Status: sde Components Created But Not Integrated
 
-The world-class learning components have been implemented (4,184 lines of production-ready code) but are **not yet integrated** into the Powell Sequential Decision Engine's decision flow.
+The sde learning components have been implemented (4,184 lines of production-ready code) but are **not yet integrated** into the Powell Sequential Decision Engine's decision flow.
 
 **Date**: 2025-11-17
 
@@ -12,23 +12,23 @@ The world-class learning components have been implemented (4,184 lines of produc
 
 ### Existing Basic Learning (Currently Active)
 
-| Component | Implementation | Location | Limitations |
-|-----------|---------------|----------|-------------|
-| **VFA Learning** | Basic FIFO replay buffer (5000 samples), PyTorch MLP, simple TD | vfa.py:270-380 | No prioritization, no regularization, fixed LR |
-| **CFA Learning** | Exponential smoothing (α=0.1) | cfa.py:580-622 | No Adam optimizer, no convergence detection |
-| **PFA Learning** | Basic pattern mining (destination/tags) | pfa.py:350-450 | No Apriori, no association rules, no lift/confidence |
-| **Exploration** | Fixed ε=0.1 greedy | vfa.py:95 | No UCB, no adaptation, no Thompson sampling |
+| Component        | Implementation                                                  | Location       | Limitations                                          |
+| ---------------- | --------------------------------------------------------------- | -------------- | ---------------------------------------------------- |
+| **VFA Learning** | Basic FIFO replay buffer (5000 samples), PyTorch MLP, simple TD | vfa.py:270-380 | No prioritization, no regularization, fixed LR       |
+| **CFA Learning** | Exponential smoothing (α=0.1)                                   | cfa.py:580-622 | No Adam optimizer, no convergence detection          |
+| **PFA Learning** | Basic pattern mining (destination/tags)                         | pfa.py:350-450 | No Apriori, no association rules, no lift/confidence |
+| **Exploration**  | Fixed ε=0.1 greedy                                              | vfa.py:95      | No UCB, no adaptation, no Thompson sampling          |
 
-### World-Class Components (Created But Unused)
+### sde Components (Created But Unused)
 
-| Component | Capabilities | Not Used By |
-|-----------|-------------|-------------|
-| **parameter_update.py** | Adam optimizer, momentum, convergence detection | CFA |
-| **pattern_mining.py** | Apriori, association rules, sequential patterns | PFA |
-| **exploration.py** | ε-greedy, UCB, Boltzmann, Thompson, adaptive | VFA, PFA |
-| **experience_replay.py** | Prioritized replay, sum tree, HER, IS weights | VFA |
-| **regularization.py** | L1/L2, dropout, early stopping, K-fold | VFA |
-| **lr_scheduling.py** | 8 schedulers (cosine, SGDR, 1-cycle, etc.) | VFA |
+| Component                | Capabilities                                    | Not Used By |
+| ------------------------ | ----------------------------------------------- | ----------- |
+| **parameter_update.py**  | Adam optimizer, momentum, convergence detection | CFA         |
+| **pattern_mining.py**    | Apriori, association rules, sequential patterns | PFA         |
+| **exploration.py**       | ε-greedy, UCB, Boltzmann, Thompson, adaptive    | VFA, PFA    |
+| **experience_replay.py** | Prioritized replay, sum tree, HER, IS weights   | VFA         |
+| **regularization.py**    | L1/L2, dropout, early stopping, K-fold          | VFA         |
+| **lr_scheduling.py**     | 8 schedulers (cosine, SGDR, 1-cycle, etc.)      | VFA         |
 
 ---
 
@@ -473,7 +473,7 @@ def select_best_rule(self, state):
 
 **File**: `backend/services/learning_coordinator.py`
 
-**1. Import World-Class Components** (Lines 10-20)
+**1. Import sde Components** (Lines 10-20)
 
 ```python
 from ..core.learning.feedback_processor import FeedbackProcessor
@@ -494,7 +494,7 @@ def __init__(self, engine=None, ...):
     self.engine = engine
     self.processor = feedback_processor or FeedbackProcessor()
 
-    # Add world-class coordinators
+    # Add sde coordinators
     self.exploration_coordinator = ExplorationCoordinator()
     self.replay_coordinator = ExperienceReplayCoordinator(
         buffer_type="prioritized",
@@ -513,7 +513,7 @@ def __init__(self, engine=None, ...):
 
 ```python
 def process_outcome(self, outcome, state=None):
-    """Enhanced outcome processing with world-class learning."""
+    """Enhanced outcome processing with sde learning."""
 
     # Compute signals (existing)
     signals = self.processor.process_outcome(outcome)
@@ -552,7 +552,7 @@ def process_outcome(self, outcome, state=None):
             priority=td_error,
         )
 
-        # Batch training with world-class enhancements
+        # Batch training with sde enhancements
         if self.replay_coordinator.can_sample(32):
             experiences, indices, is_weights = self.replay_coordinator.sample_batch(32)
             # Train VFA with experiences (delegate to VFA's enhanced train method)
@@ -655,13 +655,13 @@ class TestLearningCoordinator:
 
 ## Implementation Timeline
 
-| Phase | Component | Effort | Dependencies | Start | End |
-|-------|-----------|--------|--------------|-------|-----|
-| 1 | VFA Enhancement | 6h | None | Day 1 | Day 1 |
-| 2 | CFA Enhancement | 3h | None | Day 1 | Day 2 |
-| 3 | PFA Enhancement | 4h | None | Day 2 | Day 2 |
-| 4 | Learning Coordinator | 3h | Phases 1-3 | Day 2 | Day 3 |
-| 5 | Testing & Validation | 4h | Phases 1-4 | Day 3 | Day 3 |
+| Phase | Component            | Effort | Dependencies | Start | End   |
+| ----- | -------------------- | ------ | ------------ | ----- | ----- |
+| 1     | VFA Enhancement      | 6h     | None         | Day 1 | Day 1 |
+| 2     | CFA Enhancement      | 3h     | None         | Day 1 | Day 2 |
+| 3     | PFA Enhancement      | 4h     | None         | Day 2 | Day 2 |
+| 4     | Learning Coordinator | 3h     | Phases 1-3   | Day 2 | Day 3 |
+| 5     | Testing & Validation | 4h     | Phases 1-4   | Day 3 | Day 3 |
 
 **Total Estimated Time**: 20 hours (2.5 developer days)
 
@@ -672,18 +672,21 @@ class TestLearningCoordinator:
 After integration, we should observe:
 
 ### Performance Improvements
+
 - **VFA Training Speed**: 3x faster convergence (due to prioritized replay)
 - **CFA Accuracy**: 15-20% improvement in cost prediction MAPE
 - **PFA Coverage**: 50%+ increase in applicable rules
 - **Exploration Efficiency**: 40% reduction in suboptimal decisions during learning
 
 ### System Metrics
+
 - **Learning Rate Adaptation**: Automatic decay from 0.001 → 0.0001 over 1000 epochs
 - **Overfitting Detection**: Early stopping triggers within 20 epochs
 - **Parameter Convergence**: CFA parameters converge within 200 updates
 - **Rule Quality**: PFA rules achieve confidence > 0.7, lift > 1.5
 
 ### Code Quality
+
 - **Test Coverage**: 80%+ for learning components
 - **Documentation**: Inline comments + docstrings for all new methods
 - **Type Hints**: Full type annotations for integration points
@@ -694,19 +697,25 @@ After integration, we should observe:
 ## Risk Mitigation
 
 ### Risk 1: Breaking Existing Functionality
+
 **Mitigation**:
-- Implement feature flags to toggle world-class components on/off
+
+- Implement feature flags to toggle sde components on/off
 - Run comprehensive regression tests before deployment
 - Gradual rollout (VFA → CFA → PFA → full integration)
 
 ### Risk 2: Performance Degradation
+
 **Mitigation**:
+
 - Profile before/after integration
 - Set performance budgets (e.g., training < 100ms per batch)
 - Use lazy initialization for heavy components
 
 ### Risk 3: Hyperparameter Tuning Required
+
 **Mitigation**:
+
 - Start with conservative defaults from research papers
 - Implement A/B testing framework
 - Track learning curves for manual tuning
@@ -715,7 +724,7 @@ After integration, we should observe:
 
 ## Next Steps
 
-1. **Immediate**: Create feature branch `feature/world-class-learning-integration`
+1. **Immediate**: Create feature branch `feature/sde-learning-integration`
 2. **Day 1**: Implement Phase 1 (VFA enhancement)
 3. **Day 2**: Implement Phases 2-3 (CFA and PFA)
 4. **Day 3**: Implement Phases 4-5 (coordinator and testing)
@@ -725,7 +734,8 @@ After integration, we should observe:
 
 ## Conclusion
 
-The world-class learning components are **ready to integrate** but require:
+The sde learning components are **ready to integrate** but require:
+
 - **20 hours development time** across 5 phases
 - **Systematic integration** into VFA, CFA, PFA, and LearningCoordinator
 - **Comprehensive testing** to validate improvements

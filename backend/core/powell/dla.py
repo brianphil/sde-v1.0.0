@@ -446,7 +446,7 @@ class DirectLookaheadApproximation:
         period: DLAPeriod,
     ) -> Route:
         """Create route from orders for period."""
-        route_id = f"route_dla_{period.period_id}_{vehicle.vehicle_id}"
+        route_id = f"route_dla_{uuid.uuid4().hex[:12]}"
 
         total_weight = sum(o.weight_tonnes for o in orders.values())
         total_volume = sum(o.volume_m3 for o in orders.values())

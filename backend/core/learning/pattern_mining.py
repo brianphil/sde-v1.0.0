@@ -1,6 +1,6 @@
 """Advanced pattern mining for Policy Function Approximation (PFA).
 
-This module implements world-class pattern mining and association rule learning for
+This module implements sde pattern mining and association rule learning for
 extracting decision-making policies from operational data:
 
 - Frequent pattern mining (Apriori-style)
@@ -152,24 +152,26 @@ class FrequentPatternMiner:
             # Convert to Pattern objects
             for itemset, count in current_patterns.items():
                 support = count / n_transactions
-                all_patterns.append(Pattern(
-                    items=itemset,
-                    support=support,
-                    count=count,
-                ))
+                all_patterns.append(
+                    Pattern(
+                        items=itemset,
+                        support=support,
+                        count=count,
+                    )
+                )
 
             # Generate candidate (k+1)-itemsets from k-itemsets
             if k < self.max_itemset_size:
                 current_patterns = self._generate_candidates(
-                    current_patterns,
-                    transactions,
-                    min_count
+                    current_patterns, transactions, min_count
                 )
 
         # Sort by support (descending)
         all_patterns.sort(key=lambda p: p.support, reverse=True)
 
-        logger.info(f"Mined {len(all_patterns)} frequent patterns from {n_transactions} transactions")
+        logger.info(
+            f"Mined {len(all_patterns)} frequent patterns from {n_transactions} transactions"
+        )
         return all_patterns
 
     def _generate_candidates(
@@ -210,9 +212,7 @@ class FrequentPatternMiner:
         }
 
     def _all_subsets_frequent(
-        self,
-        itemset: frozenset,
-        frequent_k_itemsets: Dict[frozenset, int]
+        self, itemset: frozenset, frequent_k_itemsets: Dict[frozenset, int]
     ) -> bool:
         """Check if all k-subsets of (k+1)-itemset are frequent."""
         k = len(list(frequent_k_itemsets.keys())[0])
@@ -220,7 +220,7 @@ class FrequentPatternMiner:
         # Generate all k-subsets
         items = list(itemset)
         for i in range(len(items)):
-            subset = frozenset(items[:i] + items[i+1:])
+            subset = frozenset(items[:i] + items[i + 1 :])
             if len(subset) == k and subset not in frequent_k_itemsets:
                 return False
 
@@ -318,7 +318,11 @@ class AssociationRuleLearner:
                         continue
 
                     # Conviction: how much more often antecedent appears without consequent
-                    conviction = (1 - consequent_support) / (1 - confidence) if confidence < 1 else float('inf')
+                    conviction = (
+                        (1 - consequent_support) / (1 - confidence)
+                        if confidence < 1
+                        else float("inf")
+                    )
 
                     # Create rule
                     rule = AssociationRule(
@@ -336,9 +340,11 @@ class AssociationRuleLearner:
 
         # Sort by lift (descending) and limit
         rules.sort(key=lambda r: r.lift, reverse=True)
-        rules = rules[:self.max_rules]
+        rules = rules[: self.max_rules]
 
-        logger.info(f"Learned {len(rules)} association rules from {len(patterns)} patterns")
+        logger.info(
+            f"Learned {len(rules)} association rules from {len(patterns)} patterns"
+        )
         return rules
 
     def _combinations(self, items: List, r: int) -> List[List]:
@@ -349,7 +355,9 @@ class AssociationRuleLearner:
             return []
 
         # Include first item
-        with_first = [[items[0]] + rest for rest in self._combinations(items[1:], r - 1)]
+        with_first = [
+            [items[0]] + rest for rest in self._combinations(items[1:], r - 1)
+        ]
         # Exclude first item
         without_first = self._combinations(items[1:], r)
 
@@ -380,7 +388,9 @@ class SequentialPatternMiner:
         self.max_time_gap = max_time_gap
         self.max_sequence_length = max_sequence_length
 
-    def mine_sequences(self, transactions: List[Transaction]) -> List[Tuple[List[str], float]]:
+    def mine_sequences(
+        self, transactions: List[Transaction]
+    ) -> List[Tuple[List[str], float]]:
         """Mine frequent sequential patterns.
 
         Args:
@@ -405,9 +415,7 @@ class SequentialPatternMiner:
                 item_counts[item] += 1
 
         frequent_1_seqs = {
-            (item,): count
-            for item, count in item_counts.items()
-            if count >= min_count
+            (item,): count for item, count in item_counts.items() if count >= min_count
         }
 
         all_sequences = []
@@ -426,9 +434,7 @@ class SequentialPatternMiner:
             # Generate (k+1)-sequences
             if k < self.max_sequence_length:
                 current_sequences = self._grow_sequences(
-                    current_sequences,
-                    sorted_trans,
-                    min_count
+                    current_sequences, sorted_trans, min_count
                 )
 
         # Sort by support
@@ -465,7 +471,9 @@ class SequentialPatternMiner:
 
         return candidate_counts
 
-    def _count_sequence_support(self, sequence: Tuple, transactions: List[Transaction]) -> int:
+    def _count_sequence_support(
+        self, sequence: Tuple, transactions: List[Transaction]
+    ) -> int:
         """Count how many transaction windows contain the sequence."""
         count = 0
 
@@ -477,10 +485,7 @@ class SequentialPatternMiner:
         return count
 
     def _matches_sequence(
-        self,
-        sequence: Tuple,
-        transactions: List[Transaction],
-        start_idx: int
+        self, sequence: Tuple, transactions: List[Transaction], start_idx: int
     ) -> bool:
         """Check if sequence appears in transactions starting at start_idx."""
         if start_idx >= len(transactions):
@@ -678,7 +683,9 @@ class PatternMiningCoordinator:
         alpha = 0.1  # Learning rate
         rule.avg_reward = (1 - alpha) * rule.avg_reward + alpha * reward
 
-    def prune_low_performance_rules(self, min_success_rate: float = 0.3, min_applications: int = 10):
+    def prune_low_performance_rules(
+        self, min_success_rate: float = 0.3, min_applications: int = 10
+    ):
         """Remove rules with poor empirical performance.
 
         Args:
@@ -720,11 +727,25 @@ class PatternMiningCoordinator:
         return {
             "total_rules": len(self.active_rules),
             "active_rules": active_count,
-            "avg_confidence": statistics.mean(r.confidence for r in active_rules) if active_rules else 0.0,
-            "avg_lift": statistics.mean(r.lift for r in active_rules) if active_rules else 0.0,
-            "avg_success_rate": statistics.mean(r.success_rate() for r in active_rules if r.times_applied > 0) if active_rules else 0.0,
+            "avg_confidence": (
+                statistics.mean(r.confidence for r in active_rules)
+                if active_rules
+                else 0.0
+            ),
+            "avg_lift": (
+                statistics.mean(r.lift for r in active_rules) if active_rules else 0.0
+            ),
+            "avg_success_rate": (
+                statistics.mean(
+                    r.success_rate() for r in active_rules if r.times_applied > 0
+                )
+                if active_rules
+                else 0.0
+            ),
             "total_applications": sum(r.times_applied for r in active_rules),
             "mining_count": self.mining_count,
             "transaction_count": len(self.transactions),
-            "last_mining": self.last_mining_time.isoformat() if self.last_mining_time else None,
+            "last_mining": (
+                self.last_mining_time.isoformat() if self.last_mining_time else None
+            ),
         }

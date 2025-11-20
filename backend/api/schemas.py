@@ -245,7 +245,7 @@ class RouteResponse(BaseModel):
 # Decision schemas
 class DecisionRequest(BaseModel):
     decision_type: DecisionTypeEnum
-    trigger_reason: str
+    trigger_reason: Optional[str] = "Manual decision request from UI"
     context: Optional[Dict[str, Any]] = Field(default_factory=dict)
 
 
@@ -275,6 +275,52 @@ class DecisionResponse(BaseModel):
     committed: bool = False
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class PolicyRecommendation(BaseModel):
+    """Individual policy recommendation for comparison."""
+    policy_name: str
+    recommended_action: ActionTypeEnum
+    confidence_score: float
+    expected_value: float
+    routes: List[RouteResponse]
+    reasoning: str
+    policy_parameters: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AgreementAnalysis(BaseModel):
+    """Analysis of policy agreement/disagreement."""
+    agreement_score: float  # 0.0 to 1.0
+    consensus_action: str
+    consensus_count: int
+    total_policies: int
+    conflicts: List[Dict[str, Any]] = Field(default_factory=list)
+    avg_confidence: float
+    avg_expected_value: float
+
+
+class PolicyComparisonResponse(BaseModel):
+    """Complete 4-policy comparison response."""
+    decision_type: DecisionTypeEnum
+    timestamp: datetime
+
+    # Individual policy recommendations
+    pfa: PolicyRecommendation
+    vfa: PolicyRecommendation
+    cfa: PolicyRecommendation
+    dla: PolicyRecommendation
+
+    # Engine's recommended policy (from existing logic)
+    recommended: PolicyRecommendation
+
+    # Agreement analysis
+    agreement_analysis: AgreementAnalysis
+
+    # Metadata
+    computation_time_ms: float
+    trigger_reason: Optional[str] = ""
 
 
 class DecisionCommitRequest(BaseModel):

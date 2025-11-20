@@ -5,6 +5,7 @@ from typing import List, Optional
 from datetime import datetime
 import uuid
 import logging
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.schemas import (
@@ -15,9 +16,13 @@ from backend.api.schemas import (
     RouteResponse,
     SystemStateResponse,
     LearningMetricsResponse,
+    PolicyComparisonResponse,
+    PolicyRecommendation,
+    AgreementAnalysis,
 )
 from backend.core.models.decision import DecisionType
 from backend.core.models.state import SystemState
+from backend.core.models.domain import RouteStatus
 from backend.db.database import get_db
 from backend.db.models import RouteModel, RouteStopModel, DecisionModel
 
@@ -29,6 +34,7 @@ router = APIRouter()
 def get_app_state():
     """Get application state from main app."""
     from backend.api.main import app_state
+
     return app_state
 
 
@@ -111,7 +117,7 @@ async def make_decision(
 
         # Also store decision object temporarily for commit (routes need to be created)
         # We'll use a module-level cache with TTL
-        if not hasattr(make_decision, '_decision_cache'):
+        if not hasattr(make_decision, "_decision_cache"):
             make_decision._decision_cache = {}
         make_decision._decision_cache[decision_id] = {
             "decision": decision,
@@ -162,86 +168,63 @@ async def make_decision(
 
     except Exception as e:
         logger.error(f"Error making decision: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to make decision: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to make decision: {str(e)}"
+        )
 
 
-@router.post("/decisions/{decision_id}/commit", response_model=DecisionCommitResponse)
-async def commit_decision(
-    decision_id: str,
-    db: AsyncSession = Depends(get_db),
+@router.post("/decisions/compare-policies", response_model=PolicyComparisonResponse)
+async def compare_policies(
+    request: DecisionRequest,
     app_state=Depends(get_app_state),
 ):
-    """Commit a previously made decision to execute it.
+    """Compare all 4 policy classes (PFA, VFA, CFA, DLA) for decision support.
 
-    This applies the decision to the system state, creating routes and
-    assigning orders as specified by the decision.
+    This endpoint evaluates the same decision context using all 4 policy classes
+    and returns their individual recommendations plus an agreement analysis.
+    Use this for transparent decision support showing policy consensus/disagreement.
 
     Args:
-        decision_id: ID of the decision to commit
+        request: Decision request with type and context
 
     Returns:
-        Commit result with created routes and assigned orders
+        Comparison of all 4 policies with agreement analysis
     """
     try:
-        logger.info(f"Committing decision: {decision_id}")
+        logger.info(f"Comparing all policies: {request.decision_type.value}")
 
-        # Load decision from database
-        result_db = await db.execute(
-            select(DecisionModel).where(DecisionModel.decision_id == decision_id)
-        )
-        decision_model = result_db.scalar_one_or_none()
+        # Get current state
+        current_state = app_state.state_manager.get_current_state()
 
-        if not decision_model:
-            raise HTTPException(status_code=404, detail=f"Decision {decision_id} not found")
-
-        if decision_model.committed:
+        if not current_state:
             raise HTTPException(
                 status_code=400,
-                detail=f"Decision {decision_id} already committed",
+                detail="No system state available. Initialize the system first.",
             )
 
-        # Retrieve decision object from cache
-        if not hasattr(make_decision, '_decision_cache') or decision_id not in make_decision._decision_cache:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Decision {decision_id} expired or not found in cache. Please make the decision again.",
-            )
+        # Map request decision type to domain model
+        decision_type = DecisionType[request.decision_type.value.upper()]
 
-        stored = make_decision._decision_cache[decision_id]
-
-        # Commit decision
-        result = app_state.engine.commit_decision(
-            stored["decision"],
-            stored["state"],
+        # Compare all policies
+        start_time = datetime.now()
+        comparison_results = app_state.engine.compare_all_policies(
+            state=current_state,
+            decision_type=decision_type,
+            trigger_reason=request.trigger_reason,
         )
+        computation_time_ms = (datetime.now() - start_time).total_seconds() * 1000
 
-        # Update decision in database
-        decision_model.committed = True
-        decision_model.committed_at = datetime.now()
-        await db.commit()
-        await db.refresh(decision_model)
-
-        logger.info(f"Decision {decision_id} marked as committed in database")
-
-        # Remove from cache
-        del make_decision._decision_cache[decision_id]
-
-        # Extract route IDs from Route objects if needed
-        routes_created = result["routes_created"]
-        route_ids = []
-
-        if routes_created:
-            if hasattr(routes_created[0], 'route_id'):
-                # Result contains Route objects, save to database
-                for route in routes_created:
-                    route_ids.append(route.route_id)
-
-                    # Save route to database
-                    route_model = RouteModel(
+        # Helper function to convert PolicyDecision to PolicyRecommendation
+        def to_policy_recommendation(decision, policy_name: str) -> PolicyRecommendation:
+            route_responses = []
+            for route in decision.routes:
+                route_responses.append(
+                    RouteResponse(
                         route_id=route.route_id,
                         vehicle_id=route.vehicle_id,
                         order_ids=route.order_ids,
-                        destination_cities=[city.value if hasattr(city, 'value') else city for city in route.destination_cities],
+                        stops=[],  # Simplified for now
+                        destination_cities=route.destination_cities,
                         total_distance_km=route.total_distance_km,
                         estimated_duration_minutes=route.estimated_duration_minutes,
                         estimated_cost_kes=route.estimated_cost_kes,
@@ -249,130 +232,149 @@ async def commit_decision(
                         estimated_fuel_cost=route.estimated_fuel_cost,
                         estimated_time_cost=route.estimated_time_cost,
                         estimated_delay_penalty=route.estimated_delay_penalty,
-                        decision_id=decision_id,  # Link route to decision
                         created_at=route.created_at,
                     )
-                    db.add(route_model)
+                )
 
-                    # Save route stops to database
-                    for stop in route.stops:
-                        stop_model = RouteStopModel(
-                            stop_id=stop.stop_id,
-                            route_id=route.route_id,
-                            order_ids=stop.order_ids,
-                            location=stop.location.model_dump() if hasattr(stop.location, 'model_dump') else stop.location.__dict__,
-                            stop_type=stop.stop_type,
-                            sequence_order=stop.sequence_order,
-                            estimated_arrival=stop.estimated_arrival,
-                            estimated_duration_minutes=stop.estimated_duration_minutes,
-                            status=stop.status,
-                        )
-                        db.add(stop_model)
+            # Extract policy parameters if available
+            policy_params = {}
+            if hasattr(decision, 'policy_parameters'):
+                policy_params = decision.policy_parameters
+            elif hasattr(decision, 'is_deterministic'):
+                policy_params['deterministic'] = decision.is_deterministic
 
-                    # Apply route_created event to state manager
-                    app_state.state_manager.apply_event(
-                        "route_created",
-                        {"route": route}
-                    )
+            return PolicyRecommendation(
+                policy_name=policy_name,
+                recommended_action=decision.recommended_action,
+                confidence_score=decision.confidence_score,
+                expected_value=decision.expected_value,
+                routes=route_responses,
+                reasoning=decision.reasoning,
+                policy_parameters=policy_params,
+            )
 
-                # Commit all routes to database
-                await db.commit()
-                logger.info(f"Saved {len(route_ids)} routes to database")
-            else:
-                # Already string IDs
-                route_ids = routes_created
-
-        response = DecisionCommitResponse(
-            success=not bool(result.get("errors")),
-            action=result["action"],
-            routes_created=route_ids,
-            orders_assigned=result["orders_assigned"],
-            errors=result.get("errors", []),
-            message=f"Decision {decision_id} committed successfully"
-            if not result.get("errors")
-            else f"Decision committed with errors",
+        # Build response
+        response = PolicyComparisonResponse(
+            decision_type=request.decision_type,
+            timestamp=datetime.now(),
+            pfa=to_policy_recommendation(comparison_results['pfa'], "PFA"),
+            vfa=to_policy_recommendation(comparison_results['vfa'], "VFA"),
+            cfa=to_policy_recommendation(comparison_results['cfa'], "CFA"),
+            dla=to_policy_recommendation(comparison_results['dla'], "DLA"),
+            recommended=to_policy_recommendation(
+                comparison_results['recommended'],
+                getattr(comparison_results['recommended'], 'policy_name', 'HYBRID')
+            ),
+            agreement_analysis=AgreementAnalysis(**comparison_results['agreement_analysis']),
+            computation_time_ms=computation_time_ms,
+            trigger_reason=request.trigger_reason,
         )
 
         logger.info(
-            f"Decision {decision_id} committed: {len(route_ids)} routes created"
+            f"Policy comparison complete: {response.agreement_analysis.agreement_score:.0%} agreement"
         )
 
         return response
 
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Error committing decision: {e}")
+        logger.error(f"Error comparing policies: {e}")
         raise HTTPException(
-            status_code=500, detail=f"Failed to commit decision: {str(e)}"
+            status_code=500, detail=f"Failed to compare policies: {str(e)}"
         )
 
 
-@router.get("/decisions/{decision_id}")
-async def get_decision(
-    decision_id: str,
+@router.get("/decisions/history", response_model=List[DecisionResponse])
+async def get_decision_history(
+    limit: Optional[int] = 10,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get details of a specific decision from database.
+    """Get decision history with full details.
 
     Args:
-        decision_id: ID of the decision to retrieve
+        limit: Maximum number of decisions to return
 
     Returns:
-        Decision details from database
+        List of decision details from database
     """
     try:
-        # Load decision from database
-        result = await db.execute(
-            select(DecisionModel).where(DecisionModel.decision_id == decision_id)
-        )
-        decision_model = result.scalar_one_or_none()
+        # Build query
+        query = select(DecisionModel)
 
-        if not decision_model:
-            raise HTTPException(status_code=404, detail=f"Decision {decision_id} not found")
+        # Sort by created_at (most recent first)
+        query = query.order_by(DecisionModel.created_at.desc())
 
-        # Load associated routes if committed
-        routes_data = []
-        if decision_model.committed and decision_model.routes_created:
-            routes_result = await db.execute(
-                select(RouteModel).where(
-                    RouteModel.route_id.in_(decision_model.routes_created)
+        # Limit results
+        query = query.limit(limit)
+
+        # Execute query
+        result = await db.execute(query)
+        decision_models = result.scalars().all()
+
+        # Convert to response schema
+        decisions = []
+        for decision_model in decision_models:
+            # Load associated routes if committed
+            route_responses = []
+            if decision_model.committed and decision_model.routes_created:
+                routes_result = await db.execute(
+                    select(RouteModel).where(
+                        RouteModel.route_id.in_(decision_model.routes_created)
+                    )
+                )
+                route_models = routes_result.scalars().all()
+
+                for route_model in route_models:
+                    route_responses.append(
+                        RouteResponse(
+                            route_id=route_model.route_id,
+                            vehicle_id=route_model.vehicle_id,
+                            order_ids=route_model.order_ids,
+                            stops=[],  # Simplified for now
+                            destination_cities=route_model.destination_cities,
+                            total_distance_km=route_model.total_distance_km,
+                            estimated_duration_minutes=route_model.estimated_duration_minutes,
+                            estimated_cost_kes=route_model.estimated_cost_kes,
+                            status=route_model.status,
+                            estimated_fuel_cost=route_model.estimated_fuel_cost,
+                            estimated_time_cost=route_model.estimated_time_cost,
+                            estimated_delay_penalty=route_model.estimated_delay_penalty,
+                            created_at=route_model.created_at,
+                            started_at=route_model.started_at,
+                            completed_at=route_model.completed_at,
+                        )
+                    )
+
+            # Import DecisionTypeEnum from schemas
+            from backend.api.schemas import DecisionTypeEnum, ActionTypeEnum
+
+            # Map decision_type string to enum
+            decision_type_enum = DecisionTypeEnum(decision_model.decision_type)
+
+            # Map recommended action - get from routes if available
+            recommended_action = ActionTypeEnum.CREATE_ROUTE  # Default
+
+            decisions.append(
+                DecisionResponse(
+                    decision_id=decision_model.decision_id,
+                    decision_type=decision_type_enum,
+                    policy_name=decision_model.policy_used,
+                    recommended_action=recommended_action,
+                    confidence_score=decision_model.decision_confidence,
+                    expected_value=decision_model.total_cost_estimate,
+                    routes=route_responses,
+                    reasoning="",
+                    computation_time_ms=decision_model.computation_time_ms,
+                    timestamp=decision_model.created_at,
+                    committed=decision_model.committed,
                 )
             )
-            route_models = routes_result.scalars().all()
 
-            for route_model in route_models:
-                routes_data.append({
-                    "route_id": route_model.route_id,
-                    "vehicle_id": route_model.vehicle_id,
-                    "order_ids": route_model.order_ids,
-                    "destination_cities": route_model.destination_cities,
-                    "total_distance_km": route_model.total_distance_km,
-                    "estimated_cost_kes": route_model.estimated_cost_kes,
-                    "status": route_model.status.value,
-                })
+        return decisions
 
-        return {
-            "decision_id": decision_model.decision_id,
-            "decision_type": decision_model.decision_type,
-            "policy_used": decision_model.policy_used,
-            "routes_created": decision_model.routes_created,
-            "orders_routed": decision_model.orders_routed,
-            "total_cost_estimate": decision_model.total_cost_estimate,
-            "decision_confidence": decision_model.decision_confidence,
-            "computation_time_ms": decision_model.computation_time_ms,
-            "committed": decision_model.committed,
-            "committed_at": decision_model.committed_at.isoformat() if decision_model.committed_at else None,
-            "created_at": decision_model.created_at.isoformat(),
-            "routes": routes_data,
-        }
-
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Error retrieving decision: {e}")
+        logger.error(f"Error getting decision history: {e}")
         raise HTTPException(
-            status_code=500, detail=f"Failed to retrieve decision: {str(e)}"
+            status_code=500, detail=f"Failed to get decision history: {str(e)}"
         )
 
 
@@ -410,7 +412,9 @@ async def list_decisions(
         decision_models = result.scalars().all()
 
         # Extract decision IDs
-        decision_ids = [decision_model.decision_id for decision_model in decision_models]
+        decision_ids = [
+            decision_model.decision_id for decision_model in decision_models
+        ]
 
         return decision_ids
 
@@ -480,4 +484,260 @@ async def get_learning_metrics(app_state=Depends(get_app_state)):
         logger.error(f"Error getting learning metrics: {e}")
         raise HTTPException(
             status_code=500, detail=f"Failed to get learning metrics: {str(e)}"
+        )
+
+
+@router.get("/metrics")
+async def get_metrics(app_state=Depends(get_app_state)):
+    """Get comprehensive learning metrics with telemetry.
+
+    Returns raw metrics from the learning coordinator including:
+    - Telemetry (VFA, CFA, PFA, general)
+    - Aggregate metrics
+    - Model accuracies
+    """
+    try:
+        metrics = app_state.learning_coordinator.get_metrics()
+        return metrics
+
+    except Exception as e:
+        logger.error(f"Error getting metrics: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get metrics: {str(e)}")
+
+
+@router.post("/decisions/{decision_id}/commit", response_model=DecisionCommitResponse)
+async def commit_decision(
+    decision_id: str,
+    db: AsyncSession = Depends(get_db),
+    app_state=Depends(get_app_state),
+):
+    """Commit a previously made decision to execute it.
+
+    This applies the decision to the system state, creating routes and
+    assigning orders as specified by the decision.
+
+    Args:
+        decision_id: ID of the decision to commit
+
+    Returns:
+        Commit result with created routes and assigned orders
+    """
+    try:
+        logger.info(f"Committing decision: {decision_id}")
+
+        # Load decision from database
+        result_db = await db.execute(
+            select(DecisionModel).where(DecisionModel.decision_id == decision_id)
+        )
+        decision_model = result_db.scalar_one_or_none()
+
+        if not decision_model:
+            raise HTTPException(
+                status_code=404, detail=f"Decision {decision_id} not found"
+            )
+
+        if decision_model.committed:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Decision {decision_id} already committed",
+            )
+
+        # Retrieve decision object from cache
+        if (
+            not hasattr(make_decision, "_decision_cache")
+            or decision_id not in make_decision._decision_cache
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Decision {decision_id} expired or not found in cache. Please make the decision again.",
+            )
+
+        stored = make_decision._decision_cache[decision_id]
+
+        # Commit decision
+        result = app_state.engine.commit_decision(
+            stored["decision"],
+            stored["state"],
+        )
+
+        # Update decision in database
+        decision_model.committed = True
+        decision_model.committed_at = datetime.now()
+        await db.commit()
+        await db.refresh(decision_model)
+
+        logger.info(f"Decision {decision_id} marked as committed in database")
+
+        # Remove from cache
+        del make_decision._decision_cache[decision_id]
+
+        # Extract route IDs from Route objects if needed
+        routes_created = result["routes_created"]
+        route_ids = []
+
+        if routes_created:
+            if hasattr(routes_created[0], "route_id"):
+                # Result contains Route objects, save to database
+                for route in routes_created:
+                    route_ids.append(route.route_id)
+
+                    # Save route to database
+                    try:
+                        route_model = RouteModel(
+                            route_id=route.route_id,
+                            vehicle_id=route.vehicle_id,
+                            order_ids=route.order_ids,
+                            destination_cities=[
+                                city.value if hasattr(city, "value") else city
+                                for city in route.destination_cities
+                            ],
+                            total_distance_km=route.total_distance_km,
+                            estimated_duration_minutes=route.estimated_duration_minutes,
+                            estimated_cost_kes=route.estimated_cost_kes,
+                            status=route.status if isinstance(route.status, RouteStatus) else RouteStatus(route.status),
+                            estimated_fuel_cost=getattr(route, 'estimated_fuel_cost', 0.0),
+                            estimated_time_cost=getattr(route, 'estimated_time_cost', 0.0),
+                            estimated_delay_penalty=getattr(route, 'estimated_delay_penalty', 0.0),
+                            decision_id=decision_id,  # Link route to decision
+                            created_at=getattr(route, 'created_at', datetime.now()),
+                        )
+                        db.add(route_model)
+                        logger.info(f"Added route {route.route_id} to database session")
+                    except Exception as route_error:
+                        logger.error(f"Error creating RouteModel for route {route.route_id}: {route_error}")
+                        logger.error(f"Route data: route_id={route.route_id}, status={route.status}, type={type(route.status)}")
+                        raise
+
+                    # Save route stops to database
+                    for stop in route.stops:
+                        stop_model = RouteStopModel(
+                            stop_id=stop.stop_id,
+                            route_id=route.route_id,
+                            order_ids=stop.order_ids,
+                            location=(
+                                stop.location.model_dump()
+                                if hasattr(stop.location, "model_dump")
+                                else stop.location.__dict__
+                            ),
+                            stop_type=stop.stop_type,
+                            sequence_order=stop.sequence_order,
+                            estimated_arrival=stop.estimated_arrival,
+                            estimated_duration_minutes=stop.estimated_duration_minutes,
+                            status=stop.status,
+                        )
+                        db.add(stop_model)
+
+                    # Apply route_created event to state manager
+                    app_state.state_manager.apply_event(
+                        "route_created", {"route": route}
+                    )
+
+                # Commit all routes to database
+                await db.commit()
+                logger.info(f"Saved {len(route_ids)} routes to database")
+            else:
+                # Already string IDs
+                route_ids = routes_created
+
+        response = DecisionCommitResponse(
+            success=not bool(result.get("errors")),
+            action=result["action"],
+            routes_created=route_ids,
+            orders_assigned=result["orders_assigned"],
+            errors=result.get("errors", []),
+            message=(
+                f"Decision {decision_id} committed successfully"
+                if not result.get("errors")
+                else f"Decision committed with errors"
+            ),
+        )
+
+        logger.info(
+            f"Decision {decision_id} committed: {len(route_ids)} routes created"
+        )
+
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error committing decision: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to commit decision: {str(e)}"
+        )
+
+
+@router.get("/decisions/{decision_id}")
+async def get_decision(
+    decision_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get details of a specific decision from database.
+
+    Args:
+        decision_id: ID of the decision to retrieve
+
+    Returns:
+        Decision details from database
+    """
+    try:
+        # Load decision from database
+        result = await db.execute(
+            select(DecisionModel).where(DecisionModel.decision_id == decision_id)
+        )
+        decision_model = result.scalar_one_or_none()
+
+        if not decision_model:
+            raise HTTPException(
+                status_code=404, detail=f"Decision {decision_id} not found"
+            )
+
+        # Load associated routes if committed
+        routes_data = []
+        if decision_model.committed and decision_model.routes_created:
+            routes_result = await db.execute(
+                select(RouteModel).where(
+                    RouteModel.route_id.in_(decision_model.routes_created)
+                )
+            )
+            route_models = routes_result.scalars().all()
+
+            for route_model in route_models:
+                routes_data.append(
+                    {
+                        "route_id": route_model.route_id,
+                        "vehicle_id": route_model.vehicle_id,
+                        "order_ids": route_model.order_ids,
+                        "destination_cities": route_model.destination_cities,
+                        "total_distance_km": route_model.total_distance_km,
+                        "estimated_cost_kes": route_model.estimated_cost_kes,
+                        "status": route_model.status.value,
+                    }
+                )
+
+        return {
+            "decision_id": decision_model.decision_id,
+            "decision_type": decision_model.decision_type,
+            "policy_used": decision_model.policy_used,
+            "routes_created": decision_model.routes_created,
+            "orders_routed": decision_model.orders_routed,
+            "total_cost_estimate": decision_model.total_cost_estimate,
+            "decision_confidence": decision_model.decision_confidence,
+            "computation_time_ms": decision_model.computation_time_ms,
+            "committed": decision_model.committed,
+            "committed_at": (
+                decision_model.committed_at.isoformat()
+                if decision_model.committed_at
+                else None
+            ),
+            "created_at": decision_model.created_at.isoformat(),
+            "routes": routes_data,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving decision: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to retrieve decision: {str(e)}"
         )

@@ -1,7 +1,7 @@
-"""Learning coordinator service with world-class enhancements.
+"""Learning coordinator service with sde enhancements.
 
 Coordinates ingestion of operational feedback, generation of learning signals,
-and invoking world-class training procedures across all policy approximations.
+and invoking sde training procedures across all policy approximations.
 
 Enhanced with:
 - Prioritized experience replay for VFA
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 class LearningCoordinator:
-    """Coordinate feedback processing and world-class model updates.
+    """Coordinate feedback processing and sde model updates.
 
     Enhanced with comprehensive telemetry for all learning components:
     - VFA: Prioritized replay, regularization, LR scheduling
@@ -89,7 +89,7 @@ class LearningCoordinator:
     def process_outcome(
         self, outcome: OperationalOutcome, state: Optional[object] = None
     ) -> Dict[str, Any]:
-        """Process a single OperationalOutcome with world-class learning.
+        """Process a single OperationalOutcome with sde learning.
 
         Enhanced workflow:
         1. Compute learning signals (FeedbackProcessor)
@@ -132,13 +132,23 @@ class LearningCoordinator:
                 # Update CFA telemetry
                 if hasattr(self.engine.cfa, "parameter_manager"):
                     params = self.engine.cfa.parameter_manager.get_cost_parameters()
-                    accuracies = self.engine.cfa.parameter_manager.get_prediction_accuracy()
+                    accuracies = (
+                        self.engine.cfa.parameter_manager.get_prediction_accuracy()
+                    )
                     is_converged = self.engine.cfa.parameter_manager.is_converged()
 
-                    self.telemetry["cfa"]["fuel_cost_per_km"] = params["fuel_cost_per_km"]
-                    self.telemetry["cfa"]["driver_cost_per_hour"] = params["driver_cost_per_hour"]
-                    self.telemetry["cfa"]["fuel_accuracy_mape"] = accuracies.get("fuel_mape", 0.0)
-                    self.telemetry["cfa"]["time_accuracy_mape"] = accuracies.get("time_mape", 0.0)
+                    self.telemetry["cfa"]["fuel_cost_per_km"] = params[
+                        "fuel_cost_per_km"
+                    ]
+                    self.telemetry["cfa"]["driver_cost_per_hour"] = params[
+                        "driver_cost_per_hour"
+                    ]
+                    self.telemetry["cfa"]["fuel_accuracy_mape"] = accuracies.get(
+                        "fuel_mape", 0.0
+                    )
+                    self.telemetry["cfa"]["time_accuracy_mape"] = accuracies.get(
+                        "time_mape", 0.0
+                    )
                     self.telemetry["cfa"]["fuel_converged"] = is_converged
                     self.telemetry["cfa"]["time_converged"] = is_converged
                     self.telemetry["cfa"]["total_updates"] += 1
@@ -202,7 +212,9 @@ class LearningCoordinator:
                     else:
                         # No pending experience; add terminal experience with priority
                         try:
-                            s_feats = self.engine.vfa.extract_state_features_from_state(state)
+                            s_feats = self.engine.vfa.extract_state_features_from_state(
+                                state
+                            )
                             action = getattr(outcome, "route_id", "route")
 
                             # Compute TD error as priority
@@ -221,11 +233,11 @@ class LearningCoordinator:
                         )
 
                     if hasattr(self.engine.vfa, "lr_scheduler"):
-                        self.telemetry["vfa"]["current_learning_rate"] = (
-                            self.engine.vfa.lr_scheduler.get_lr()
-                        )
+                        self.telemetry["vfa"][
+                            "current_learning_rate"
+                        ] = self.engine.vfa.lr_scheduler.get_lr()
 
-                    # Trigger training with world-class enhancements
+                    # Trigger training with sde enhancements
                     if self.should_retrain_vfa():
                         try:
                             batch = 32
@@ -242,11 +254,17 @@ class LearningCoordinator:
 
                             # Update telemetry
                             self.telemetry["vfa"]["total_training_steps"] += updates
-                            self.telemetry["vfa"]["last_training_samples"] = batch * updates
-                            self.telemetry["vfa"]["last_training_timestamp"] = datetime.now()
+                            self.telemetry["vfa"]["last_training_samples"] = (
+                                batch * updates
+                            )
+                            self.telemetry["vfa"][
+                                "last_training_timestamp"
+                            ] = datetime.now()
 
                             if hasattr(self.engine.vfa, "regularization"):
-                                early_stop_stats = self.engine.vfa.regularization.get_statistics()
+                                early_stop_stats = (
+                                    self.engine.vfa.regularization.get_statistics()
+                                )
                                 self.telemetry["vfa"]["early_stopping_triggered"] = (
                                     early_stop_stats.get("early_stopped", False)
                                 )
@@ -280,20 +298,37 @@ class LearningCoordinator:
 
                     # Update PFA telemetry
                     if hasattr(self.engine.pfa, "pattern_coordinator"):
-                        stats = self.engine.pfa.pattern_coordinator.get_rule_statistics()
-                        self.telemetry["pfa"]["total_rules"] = stats.get("total_rules", 0)
-                        self.telemetry["pfa"]["active_rules"] = stats.get("active_rules", 0)
-                        self.telemetry["pfa"]["avg_rule_confidence"] = stats.get("avg_confidence", 0.0)
-                        self.telemetry["pfa"]["avg_rule_lift"] = stats.get("avg_lift", 0.0)
+                        stats = (
+                            self.engine.pfa.pattern_coordinator.get_rule_statistics()
+                        )
+                        self.telemetry["pfa"]["total_rules"] = stats.get(
+                            "total_rules", 0
+                        )
+                        self.telemetry["pfa"]["active_rules"] = stats.get(
+                            "active_rules", 0
+                        )
+                        self.telemetry["pfa"]["avg_rule_confidence"] = stats.get(
+                            "avg_confidence", 0.0
+                        )
+                        self.telemetry["pfa"]["avg_rule_lift"] = stats.get(
+                            "avg_lift", 0.0
+                        )
                         self.telemetry["pfa"]["patterns_mined"] = len(
                             getattr(self.engine.pfa.pattern_coordinator, "rules", [])
                         )
                         self.telemetry["pfa"]["last_mining_timestamp"] = datetime.now()
 
                     if hasattr(self.engine.pfa, "rule_exploration"):
-                        exploration_stats = self.engine.pfa.rule_exploration.get_statistics()
-                        if exploration_stats and "exploration_rate" in exploration_stats:
-                            self.telemetry["pfa"]["exploration_rate"] = exploration_stats["exploration_rate"]
+                        exploration_stats = (
+                            self.engine.pfa.rule_exploration.get_statistics()
+                        )
+                        if (
+                            exploration_stats
+                            and "exploration_rate" in exploration_stats
+                        ):
+                            self.telemetry["pfa"]["exploration_rate"] = (
+                                exploration_stats["exploration_rate"]
+                            )
 
                     # Export learned rules for persistence
                     exported = self.engine.pfa.export_rules_for_learning_state()
@@ -367,8 +402,7 @@ class LearningCoordinator:
             # Legacy metrics from FeedbackProcessor
             "aggregate_metrics": self.processor.get_aggregate_metrics(),
             "model_accuracies": self.processor.get_model_accuracies(),
-
-            # World-class comprehensive telemetry
+            # sde comprehensive telemetry
             "telemetry": self.telemetry.copy(),
         }
 
@@ -409,10 +443,14 @@ class LearningCoordinator:
             }
 
             if hasattr(self.engine.pfa, "pattern_coordinator"):
-                pfa_stats["pattern_stats"] = self.engine.pfa.pattern_coordinator.get_rule_statistics()
+                pfa_stats["pattern_stats"] = (
+                    self.engine.pfa.pattern_coordinator.get_rule_statistics()
+                )
 
             if hasattr(self.engine.pfa, "rule_exploration"):
-                pfa_stats["exploration_stats"] = self.engine.pfa.rule_exploration.get_statistics()
+                pfa_stats["exploration_stats"] = (
+                    self.engine.pfa.rule_exploration.get_statistics()
+                )
 
             metrics["pfa_realtime"] = pfa_stats
 

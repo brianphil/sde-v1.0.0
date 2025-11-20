@@ -42,6 +42,8 @@ class PoolConfiguration:
 
     # Trigger on geographic cluster size
     trigger_on_cluster_size: int = 3  # If 3+ orders to same cluster
+    # Lower default to 2 to allow opportunistic consolidation for small pools
+    trigger_on_cluster_size: int = 2  # If 2+ orders to same cluster
 
     # Time-based triggers
     scheduled_consolidation_times: List[str] = field(

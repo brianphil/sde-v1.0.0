@@ -1,6 +1,6 @@
 """Learning rate scheduling for adaptive optimization.
 
-This module implements world-class learning rate scheduling strategies:
+This module implements sde learning rate scheduling strategies:
 
 - Step decay: Reduce LR at fixed intervals
 - Exponential decay: Smooth exponential reduction
@@ -123,7 +123,9 @@ class ExponentialLR(LRScheduler):
     def step(self, **kwargs) -> float:
         """Update learning rate."""
         self.step_count += 1
-        self.current_lr = max(self.min_lr, self.initial_lr * (self.gamma ** self.step_count))
+        self.current_lr = max(
+            self.min_lr, self.initial_lr * (self.gamma**self.step_count)
+        )
         return self.current_lr
 
 
@@ -159,7 +161,9 @@ class CosineAnnealingLR(LRScheduler):
 
         # Cosine annealing formula
         cosine_term = math.cos(math.pi * (self.step_count % self.T_max) / self.T_max)
-        self.current_lr = self.min_lr + 0.5 * (self.initial_lr - self.min_lr) * (1 + cosine_term)
+        self.current_lr = self.min_lr + 0.5 * (self.initial_lr - self.min_lr) * (
+            1 + cosine_term
+        )
 
         return self.current_lr
 
@@ -207,11 +211,15 @@ class CosineAnnealingWarmRestarts(LRScheduler):
             self.T_cur = 0
             self.T_i *= self.T_mult
             self.restart_count += 1
-            logger.info(f"SGDR: Warm restart #{self.restart_count} at step {self.step_count}")
+            logger.info(
+                f"SGDR: Warm restart #{self.restart_count} at step {self.step_count}"
+            )
 
         # Cosine annealing within current period
         cosine_term = math.cos(math.pi * self.T_cur / self.T_i)
-        self.current_lr = self.min_lr + 0.5 * (self.initial_lr - self.min_lr) * (1 + cosine_term)
+        self.current_lr = self.min_lr + 0.5 * (self.initial_lr - self.min_lr) * (
+            1 + cosine_term
+        )
 
         return self.current_lr
 
@@ -249,7 +257,7 @@ class ReduceLROnPlateau(LRScheduler):
         self.threshold = threshold
         self.min_lr = min_lr
 
-        self.best_metric = float('inf') if mode == "min" else float('-inf')
+        self.best_metric = float("inf") if mode == "min" else float("-inf")
         self.num_bad_steps = 0
 
     def step(self, metric: float, **kwargs) -> float:
@@ -337,7 +345,9 @@ class CyclicLR(LRScheduler):
         self.step_count += 1
 
         # Calculate cycle position
-        cycle = math.floor(1 + self.step_count / (self.step_size_up + self.step_size_down))
+        cycle = math.floor(
+            1 + self.step_count / (self.step_size_up + self.step_size_down)
+        )
         x = abs(self.step_count / self.step_size_up - 2 * cycle + 1)
 
         # Calculate LR based on mode
@@ -346,12 +356,14 @@ class CyclicLR(LRScheduler):
         elif self.mode == "triangular2":
             scale_factor = 1.0 / (2.0 ** (cycle - 1))
         elif self.mode == "exp_range":
-            scale_factor = self.gamma ** self.step_count
+            scale_factor = self.gamma**self.step_count
         else:
             raise ValueError(f"Unknown mode: {self.mode}")
 
         # Linear interpolation between base_lr and max_lr
-        self.current_lr = self.base_lr + (self.max_lr - self.base_lr) * max(0, 1 - x) * scale_factor
+        self.current_lr = (
+            self.base_lr + (self.max_lr - self.base_lr) * max(0, 1 - x) * scale_factor
+        )
 
         # Track cycle changes
         if cycle != self.cycle_count:
@@ -413,7 +425,9 @@ class OneCycleLR(LRScheduler):
             # Decay phase: decrease from max_lr to final_lr using cosine
             pct = (self.step_count - self.step_size_up) / self.step_size_down
             cosine_term = math.cos(math.pi * pct)
-            self.current_lr = self.final_lr + 0.5 * (self.max_lr - self.final_lr) * (1 + cosine_term)
+            self.current_lr = self.final_lr + 0.5 * (self.max_lr - self.final_lr) * (
+                1 + cosine_term
+            )
 
         return self.current_lr
 
@@ -449,7 +463,9 @@ class WarmupScheduler(LRScheduler):
         if self.step_count <= self.warmup_steps:
             # Linear warmup
             pct = self.step_count / self.warmup_steps
-            self.current_lr = self.warmup_start_lr + (self.initial_lr - self.warmup_start_lr) * pct
+            self.current_lr = (
+                self.warmup_start_lr + (self.initial_lr - self.warmup_start_lr) * pct
+            )
 
         else:
             # Use base scheduler
@@ -497,7 +513,9 @@ class LRSchedulerCoordinator:
         elif scheduler_type == "1cycle":
             max_lr = scheduler_kwargs.pop("max_lr", initial_lr * 10)
             total_steps = scheduler_kwargs.pop("total_steps", 1000)
-            self.scheduler = OneCycleLR(initial_lr, max_lr, total_steps, **scheduler_kwargs)
+            self.scheduler = OneCycleLR(
+                initial_lr, max_lr, total_steps, **scheduler_kwargs
+            )
         elif scheduler_type == "cosine_warmup":
             # Default: cosine annealing with warmup
             base = CosineAnnealingLR(initial_lr, **scheduler_kwargs)

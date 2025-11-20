@@ -1,6 +1,6 @@
 """Adaptive parameter update algorithms for Cost Function Approximation (CFA).
 
-This module implements world-class parameter learning for cost models, using:
+This module implements sde parameter learning for cost models, using:
 - Gradient-based optimization
 - Adaptive learning rates (Adam-style)
 - Momentum and bias correction
@@ -99,7 +99,9 @@ class AdaptiveParameterUpdater:
             min_value=min_value,
             max_value=max_value,
         )
-        logger.info(f"Registered parameter '{name}': {initial_value} (bounds: [{min_value}, {max_value}])")
+        logger.info(
+            f"Registered parameter '{name}': {initial_value} (bounds: [{min_value}, {max_value}])"
+        )
 
     def compute_gradient(
         self,
@@ -168,14 +170,20 @@ class AdaptiveParameterUpdater:
         param.momentum = self.beta1 * param.momentum + (1 - self.beta1) * gradient
 
         # Update second moment (RMSprop)
-        param.gradient_sq_sum = self.beta2 * param.gradient_sq_sum + (1 - self.beta2) * (gradient ** 2)
+        param.gradient_sq_sum = self.beta2 * param.gradient_sq_sum + (
+            1 - self.beta2
+        ) * (gradient**2)
 
         # Bias correction
-        momentum_corrected = param.momentum / (1 - self.beta1 ** param.update_count)
-        variance_corrected = param.gradient_sq_sum / (1 - self.beta2 ** param.update_count)
+        momentum_corrected = param.momentum / (1 - self.beta1**param.update_count)
+        variance_corrected = param.gradient_sq_sum / (
+            1 - self.beta2**param.update_count
+        )
 
         # Compute adaptive learning rate
-        adaptive_lr = self.base_learning_rate / (math.sqrt(variance_corrected) + self.epsilon)
+        adaptive_lr = self.base_learning_rate / (
+            math.sqrt(variance_corrected) + self.epsilon
+        )
 
         # Update parameter value
         update = adaptive_lr * momentum_corrected
@@ -224,7 +232,9 @@ class AdaptiveParameterUpdater:
         Returns:
             New parameter value
         """
-        gradient = self.compute_gradient(parameter_name, prediction_error, feature_value)
+        gradient = self.compute_gradient(
+            parameter_name, prediction_error, feature_value
+        )
         new_value, _ = self.update_parameter(parameter_name, gradient)
         return new_value
 
@@ -276,7 +286,7 @@ class AdaptiveParameterUpdater:
         metrics = {
             "global_step": self.global_step,
             "base_learning_rate": self.base_learning_rate,
-            "parameters": {}
+            "parameters": {},
         }
 
         for name, param in self.parameters.items():
@@ -441,15 +451,23 @@ class CFAParameterManager:
         time_mape = statistics.mean(time_mapes)
 
         # RMSE
-        fuel_rmse = math.sqrt(statistics.mean([
-            (actual - predicted) ** 2
-            for predicted, actual in self.fuel_predictions
-        ]))
+        fuel_rmse = math.sqrt(
+            statistics.mean(
+                [
+                    (actual - predicted) ** 2
+                    for predicted, actual in self.fuel_predictions
+                ]
+            )
+        )
 
-        time_rmse = math.sqrt(statistics.mean([
-            (actual - predicted) ** 2
-            for predicted, actual in self.time_predictions
-        ]))
+        time_rmse = math.sqrt(
+            statistics.mean(
+                [
+                    (actual - predicted) ** 2
+                    for predicted, actual in self.time_predictions
+                ]
+            )
+        )
 
         return {
             "fuel_mape": fuel_mape,

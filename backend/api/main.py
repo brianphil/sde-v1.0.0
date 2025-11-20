@@ -23,7 +23,14 @@ from backend.core.powell.engine import PowellEngine
 from backend.services.state_manager import StateManager
 from backend.services.event_orchestrator import EventOrchestrator
 from backend.services.learning_coordinator import LearningCoordinator
-from backend.core.models.domain import Vehicle, VehicleStatus, Location, Customer
+from backend.core.models.domain import (
+    Vehicle,
+    VehicleStatus,
+    Location,
+    Customer,
+    DestinationCity,
+    TimeWindow,
+)
 from backend.core.models.state import SystemState, EnvironmentState, LearningState
 
 # Configure logging
@@ -44,7 +51,7 @@ class AppState:
         self.orchestrator: EventOrchestrator = None
         self.learning_coordinator: LearningCoordinator = None
 
-    def initialize(self):
+    async def initialize(self):
         """Initialize all components."""
         logger.info("Initializing Powell Engine components...")
 
@@ -61,7 +68,7 @@ class AppState:
             )
 
             # Initialize system state with sample fleet and customers
-            self._initialize_system_state()
+            await self._initialize_system_state()
 
             logger.info("✅ All components initialized successfully")
 
@@ -69,12 +76,56 @@ class AppState:
             logger.error(f"❌ Failed to initialize components: {e}")
             raise
 
-    def _initialize_system_state(self):
+    async def _initialize_system_state(self):
         """Initialize system state with sample vehicles and customers."""
         logger.info("Initializing system state with sample data...")
 
         now = datetime.now()
         morning_time = now.replace(hour=8, minute=30)
+
+        # Load pending orders from database
+        from backend.db.database import async_session_factory
+        from backend.db.models import OrderModel
+        from backend.core.models.domain import Order, OrderStatus as DomainOrderStatus
+        from sqlalchemy import select as db_select
+
+        pending_orders_dict = {}
+        try:
+            if not async_session_factory:
+                logger.warning("Database session factory not initialized. Starting with empty orders.")
+            else:
+                async with async_session_factory() as session:
+                    result = await session.execute(
+                        db_select(OrderModel).where(OrderModel.status == "pending")
+                    )
+                    order_models = result.scalars().all()
+
+                    for order_model in order_models:
+                        # Convert database model to domain model
+                        order = Order(
+                            order_id=order_model.order_id,
+                            customer_id=order_model.customer_id,
+                            customer_name=order_model.customer_id,  # Use customer_id as fallback
+                            pickup_location=Location(**order_model.pickup_location),
+                            destination_city=DestinationCity(order_model.destination_city),
+                            weight_tonnes=order_model.weight_tonnes,
+                            volume_m3=order_model.volume_m3,
+                            time_window=TimeWindow(
+                                start_time=order_model.time_window_start.isoformat(),
+                                end_time=order_model.time_window_end.isoformat(),
+                            ),
+                            priority=order_model.priority,
+                            special_handling=order_model.special_handling or [],
+                            customer_constraints=order_model.customer_constraints or {},
+                            price_kes=order_model.price_kes,
+                            status=DomainOrderStatus.PENDING,
+                        )
+                        pending_orders_dict[order.order_id] = order
+
+                    logger.info(f"✅ Loaded {len(pending_orders_dict)} pending orders from database")
+        except Exception as e:
+            logger.warning(f"Could not load orders from database: {e}. Starting with empty orders.")
+            pending_orders_dict = {}
 
         # Create sample fleet
         fleet = {
@@ -180,7 +231,7 @@ class AppState:
 
         # Create and set system state
         state = SystemState(
-            pending_orders={},
+            pending_orders=pending_orders_dict,
             fleet=fleet,
             customers=customers,
             environment=env,
@@ -192,6 +243,7 @@ class AppState:
         self.state_manager.set_current_state(state)
 
         logger.info(f"✅ System state initialized:")
+        logger.info(f"   - {len(pending_orders_dict)} pending orders loaded")
         logger.info(f"   - {len(fleet)} vehicles available")
         logger.info(f"   - {len(customers)} customers configured")
         logger.info(f"   - Environment: {env.weather}, {len(env.traffic_conditions)} traffic zones")
@@ -223,7 +275,7 @@ async def lifespan(app: FastAPI):
         raise
 
     # Initialize app components
-    app_state.initialize()
+    await app_state.initialize()
 
     yield
 

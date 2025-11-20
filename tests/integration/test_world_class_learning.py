@@ -1,4 +1,4 @@
-"""Integration tests for world-class learning enhancements.
+"""Integration tests for sde learning enhancements.
 
 Tests comprehensive integration of:
 - VFA: Prioritized replay, regularization, LR scheduling, early stopping
@@ -13,7 +13,7 @@ import torch
 from datetime import datetime, timedelta
 from typing import Dict, Any, List
 
-# Import world-class learning components
+# Import sde learning components
 from backend.core.learning.experience_replay import ExperienceReplayCoordinator
 from backend.core.learning.regularization import RegularizationCoordinator
 from backend.core.learning.lr_scheduling import LRSchedulerCoordinator
@@ -57,14 +57,16 @@ def sample_experience_batch():
         done = i % 10 == 0
         priority = abs(reward) + np.random.rand()
 
-        experiences.append({
-            "state": state,
-            "action": action,
-            "reward": reward,
-            "next_state": next_state,
-            "done": done,
-            "priority": priority,
-        })
+        experiences.append(
+            {
+                "state": state,
+                "action": action,
+                "reward": reward,
+                "next_state": next_state,
+                "done": done,
+                "priority": priority,
+            }
+        )
 
     return experiences
 
@@ -84,13 +86,15 @@ def sample_cfa_outcomes():
         predicted_fuel = actual_fuel + np.random.randn() * 30
         predicted_time = actual_time + np.random.randn() * 10
 
-        outcomes.append({
-            "predicted_fuel_cost": predicted_fuel,
-            "actual_fuel_cost": actual_fuel,
-            "predicted_duration_minutes": predicted_time,
-            "actual_duration_minutes": actual_time,
-            "actual_distance_km": distance,
-        })
+        outcomes.append(
+            {
+                "predicted_fuel_cost": predicted_fuel,
+                "actual_fuel_cost": actual_fuel,
+                "predicted_duration_minutes": predicted_time,
+                "actual_duration_minutes": actual_time,
+                "actual_distance_km": distance,
+            }
+        )
 
     return outcomes
 
@@ -102,30 +106,36 @@ def sample_pfa_transactions():
 
     # Transaction 1: Morning + Eastleigh + High Priority → Success
     for _ in range(15):
-        transactions.append({
-            "transaction_id": f"txn_{len(transactions)}",
-            "features": {"time_morning", "destination_Eastleigh", "priority_high"},
-            "actions": {"consolidated_route"},
-            "reward": 1500 + np.random.randn() * 100,
-        })
+        transactions.append(
+            {
+                "transaction_id": f"txn_{len(transactions)}",
+                "features": {"time_morning", "destination_Eastleigh", "priority_high"},
+                "actions": {"consolidated_route"},
+                "reward": 1500 + np.random.randn() * 100,
+            }
+        )
 
     # Transaction 2: Afternoon + Thika + Medium Priority → Success
     for _ in range(12):
-        transactions.append({
-            "transaction_id": f"txn_{len(transactions)}",
-            "features": {"time_afternoon", "destination_Thika", "priority_medium"},
-            "actions": {"single_order_route"},
-            "reward": 1200 + np.random.randn() * 80,
-        })
+        transactions.append(
+            {
+                "transaction_id": f"txn_{len(transactions)}",
+                "features": {"time_afternoon", "destination_Thika", "priority_medium"},
+                "actions": {"single_order_route"},
+                "reward": 1200 + np.random.randn() * 80,
+            }
+        )
 
     # Transaction 3: Morning + Fresh Food → Express
     for _ in range(10):
-        transactions.append({
-            "transaction_id": f"txn_{len(transactions)}",
-            "features": {"time_morning", "tag_fresh_food", "value_high"},
-            "actions": {"express_route"},
-            "reward": 1800 + np.random.randn() * 120,
-        })
+        transactions.append(
+            {
+                "transaction_id": f"txn_{len(transactions)}",
+                "features": {"time_morning", "tag_fresh_food", "value_high"},
+                "actions": {"express_route"},
+                "reward": 1800 + np.random.randn() * 120,
+            }
+        )
 
     return transactions
 
@@ -225,7 +235,7 @@ class TestVFAIntegration:
 
         # Test early stopping
         assert reg.early_stopping.patience == 15
-        assert reg.early_stopping.best_loss == float('inf')
+        assert reg.early_stopping.best_loss == float("inf")
 
     def test_lr_scheduling_cosine_warmup(self):
         """Test cosine annealing with warmup LR scheduler."""
@@ -263,10 +273,14 @@ class TestVFAIntegration:
         )
 
         # Simulate improving validation loss
-        should_stop = reg.update_validation_metrics(epoch=1, train_loss=1.0, val_loss=0.9)
+        should_stop = reg.update_validation_metrics(
+            epoch=1, train_loss=1.0, val_loss=0.9
+        )
         assert should_stop is False, "Should not stop when improving"
 
-        should_stop = reg.update_validation_metrics(epoch=2, train_loss=0.9, val_loss=0.8)
+        should_stop = reg.update_validation_metrics(
+            epoch=2, train_loss=0.9, val_loss=0.8
+        )
         assert should_stop is False, "Should not stop when improving"
 
         # Simulate non-improving validation loss
@@ -275,7 +289,9 @@ class TestVFAIntegration:
                 epoch=epoch, train_loss=0.8 - epoch * 0.01, val_loss=0.85
             )
 
-        assert should_stop is True, "Should trigger early stopping after patience exhausted"
+        assert (
+            should_stop is True
+        ), "Should trigger early stopping after patience exhausted"
 
         stats = reg.get_statistics()
         assert stats["early_stopped"] is True
@@ -321,8 +337,12 @@ class TestCFAIntegration:
         assert updated_time != initial_time, "Time cost should be updated"
 
         # Parameters should be reasonable
-        assert 10.0 < updated_fuel < 30.0, f"Fuel cost should be reasonable: {updated_fuel}"
-        assert 200.0 < updated_time < 500.0, f"Time cost should be reasonable: {updated_time}"
+        assert (
+            10.0 < updated_fuel < 30.0
+        ), f"Fuel cost should be reasonable: {updated_fuel}"
+        assert (
+            200.0 < updated_time < 500.0
+        ), f"Time cost should be reasonable: {updated_time}"
 
     def test_convergence_detection(self, sample_cfa_outcomes):
         """Test that convergence detection works correctly."""
@@ -443,7 +463,9 @@ class TestPFAIntegration:
 
         # Check that all rules meet quality thresholds
         for rule in rules:
-            assert rule.confidence >= 0.5, f"Rule confidence {rule.confidence} should be >= 0.5"
+            assert (
+                rule.confidence >= 0.5
+            ), f"Rule confidence {rule.confidence} should be >= 0.5"
             assert rule.support >= 0.1, f"Rule support {rule.support} should be >= 0.1"
             assert rule.lift >= 1.2, f"Rule lift {rule.lift} should be >= 1.2"
 
@@ -476,8 +498,9 @@ class TestPFAIntegration:
 
         # Verify exploitation (best action should be selected most often)
         action_counts = {a: selected_actions.count(a) for a in actions}
-        assert action_counts["action_a"] > action_counts["action_c"], \
-            "Best action should be selected more often than worst action"
+        assert (
+            action_counts["action_a"] > action_counts["action_c"]
+        ), "Best action should be selected more often than worst action"
 
         # Verify epsilon decay
         stats = coordinator.get_statistics()
@@ -565,8 +588,10 @@ class TestEndToEndIntegration:
 
         vfa = ValueFunctionApproximation(use_pytorch=True)
 
-        # Verify world-class components are initialized
-        assert hasattr(vfa, "experience_coordinator"), "Should have experience coordinator"
+        # Verify sde components are initialized
+        assert hasattr(
+            vfa, "experience_coordinator"
+        ), "Should have experience coordinator"
         assert hasattr(vfa, "regularization"), "Should have regularization"
         assert hasattr(vfa, "lr_scheduler"), "Should have LR scheduler"
         assert hasattr(vfa, "exploration"), "Should have exploration"
@@ -591,7 +616,7 @@ class TestEndToEndIntegration:
         # Create CFA with default parameters
         cfa = CostFunctionApproximation()
 
-        # Verify world-class components
+        # Verify sde components
         assert hasattr(cfa, "parameter_manager"), "Should have parameter manager"
 
         # Update with outcomes
@@ -613,7 +638,7 @@ class TestEndToEndIntegration:
         # Create PFA with default parameters
         pfa = PolicyFunctionApproximation()
 
-        # Verify world-class components
+        # Verify sde components
         assert hasattr(pfa, "pattern_coordinator"), "Should have pattern coordinator"
         assert hasattr(pfa, "rule_exploration"), "Should have rule exploration"
 
@@ -718,10 +743,10 @@ class TestPerformanceBenchmarks:
 
 
 class TestRegressionPrevention:
-    """Tests to prevent regression of world-class features."""
+    """Tests to prevent regression of sde features."""
 
     def test_vfa_has_all_world_class_components(self):
-        """Ensure VFA retains all world-class components."""
+        """Ensure VFA retains all sde components."""
         vfa = ValueFunctionApproximation(use_pytorch=True)
 
         required_components = [
@@ -732,20 +757,19 @@ class TestRegressionPrevention:
         ]
 
         for component in required_components:
-            assert hasattr(vfa, component), \
-                f"VFA missing world-class component: {component}"
+            assert hasattr(vfa, component), f"VFA missing sde component: {component}"
 
     def test_cfa_has_parameter_manager(self):
         """Ensure CFA retains parameter manager."""
         # Create CFA with default parameters
         cfa = CostFunctionApproximation()
 
-        assert hasattr(cfa, "parameter_manager"), \
-            "CFA missing parameter_manager"
+        assert hasattr(cfa, "parameter_manager"), "CFA missing parameter_manager"
 
         # Verify it's the correct type
-        assert isinstance(cfa.parameter_manager, CFAParameterManager), \
-            "parameter_manager should be CFAParameterManager instance"
+        assert isinstance(
+            cfa.parameter_manager, CFAParameterManager
+        ), "parameter_manager should be CFAParameterManager instance"
 
     def test_pfa_has_apriori_components(self):
         """Ensure PFA retains Apriori and exploration components."""
@@ -758,8 +782,7 @@ class TestRegressionPrevention:
         ]
 
         for component in required_components:
-            assert hasattr(pfa, component), \
-                f"PFA missing world-class component: {component}"
+            assert hasattr(pfa, component), f"PFA missing sde component: {component}"
 
         # Verify correct types
         assert isinstance(pfa.pattern_coordinator, PatternMiningCoordinator)
@@ -772,8 +795,9 @@ class TestRegressionPrevention:
         required_sections = ["vfa", "cfa", "pfa", "general"]
 
         for section in required_sections:
-            assert section in coordinator.telemetry, \
-                f"LearningCoordinator missing telemetry section: {section}"
+            assert (
+                section in coordinator.telemetry
+            ), f"LearningCoordinator missing telemetry section: {section}"
 
 
 if __name__ == "__main__":

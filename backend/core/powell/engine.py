@@ -677,3 +677,139 @@ class PowellEngine:
 
         except Exception:
             logger.exception("Error while restoring learned state")
+
+    def compare_all_policies(
+        self,
+        state: SystemState,
+        decision_type: DecisionType,
+        orders_to_consider: Dict[str, any] = None,
+        trigger_reason: str = "",
+    ) -> Dict[str, Union[PolicyDecision, HybridDecision]]:
+        """Evaluate ALL 4 policy classes and return their individual recommendations.
+
+        This enables decision support by showing policy consensus/disagreement.
+
+        Args:
+            state: Current system state
+            decision_type: Type of decision
+            orders_to_consider: Specific orders to evaluate
+            trigger_reason: Reason for decision request
+
+        Returns:
+            Dict with keys: 'pfa', 'vfa', 'cfa', 'dla', 'recommended'
+            - Individual policy recommendations
+            - 'recommended' contains the engine's chosen policy (same as make_decision)
+        """
+        # Build shared context
+        context = self._build_decision_context(
+            state, decision_type, orders_to_consider, trigger_reason
+        )
+
+        logger.info(f"Comparing all 4 policies for {decision_type.value}")
+
+        results = {}
+
+        try:
+            # PFA - Pattern-based recommendation
+            logger.debug("Evaluating PFA...")
+            results['pfa'] = self.pfa.evaluate(state, context)
+        except Exception as e:
+            logger.error(f"PFA evaluation failed: {e}")
+            results['pfa'] = self._create_fallback_decision("PFA", context, str(e))
+
+        try:
+            # VFA - Value function approximation
+            logger.debug("Evaluating VFA...")
+            results['vfa'] = self.vfa.evaluate(state, context)
+        except Exception as e:
+            logger.error(f"VFA evaluation failed: {e}")
+            results['vfa'] = self._create_fallback_decision("VFA", context, str(e))
+
+        try:
+            # CFA - Cost function approximation
+            logger.debug("Evaluating CFA...")
+            results['cfa'] = self.cfa.evaluate(state, context)
+        except Exception as e:
+            logger.error(f"CFA evaluation failed: {e}")
+            results['cfa'] = self._create_fallback_decision("CFA", context, str(e))
+
+        try:
+            # DLA - Direct lookahead approximation
+            logger.debug("Evaluating DLA...")
+            results['dla'] = self.dla.evaluate(state, context)
+        except Exception as e:
+            logger.error(f"DLA evaluation failed: {e}")
+            results['dla'] = self._create_fallback_decision("DLA", context, str(e))
+
+        # Get recommended decision using existing logic
+        results['recommended'] = self._select_and_execute_policy(state, context, decision_type)
+
+        # Compute policy agreement score
+        results['agreement_analysis'] = self._analyze_policy_agreement(results)
+
+        logger.info(
+            f"Policy comparison complete. Agreement score: {results['agreement_analysis']['agreement_score']:.0%}"
+        )
+
+        return results
+
+    def _create_fallback_decision(
+        self, policy_name: str, context: DecisionContext, error_msg: str
+    ) -> PolicyDecision:
+        """Create fallback decision when policy evaluation fails."""
+        return PolicyDecision(
+            policy_name=policy_name,
+            decision_type=context.decision_type,
+            recommended_action=ActionType.NO_ACTION,
+            routes=[],
+            confidence_score=0.0,
+            expected_value=0.0,
+            reasoning=f"Policy evaluation failed: {error_msg}",
+        )
+
+    def _analyze_policy_agreement(self, results: Dict) -> Dict[str, any]:
+        """Analyze agreement/disagreement across policy recommendations."""
+        policies = ['pfa', 'vfa', 'cfa', 'dla']
+        decisions = [results[p] for p in policies if p in results]
+
+        if not decisions:
+            return {"agreement_score": 0.0, "consensus": None, "conflicts": []}
+
+        # Extract recommended actions
+        actions = [d.recommended_action for d in decisions]
+
+        # Count action frequency
+        action_counts = {}
+        for action in actions:
+            action_counts[action] = action_counts.get(action, 0) + 1
+
+        # Find consensus (majority action)
+        consensus_action = max(action_counts, key=action_counts.get)
+        consensus_count = action_counts[consensus_action]
+
+        # Agreement score = % of policies agreeing with consensus
+        agreement_score = consensus_count / len(decisions)
+
+        # Find conflicts (policies disagreeing)
+        conflicts = []
+        for policy, decision in zip(policies, decisions):
+            if decision.recommended_action != consensus_action:
+                conflicts.append({
+                    "policy": policy,
+                    "action": decision.recommended_action.value,
+                    "confidence": decision.confidence_score,
+                })
+
+        # Aggregate confidence and value
+        avg_confidence = sum(d.confidence_score for d in decisions) / len(decisions)
+        avg_value = sum(d.expected_value for d in decisions) / len(decisions)
+
+        return {
+            "agreement_score": agreement_score,
+            "consensus_action": consensus_action.value,
+            "consensus_count": consensus_count,
+            "total_policies": len(decisions),
+            "conflicts": conflicts,
+            "avg_confidence": avg_confidence,
+            "avg_expected_value": avg_value,
+        }

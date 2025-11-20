@@ -39,8 +39,9 @@ class ConsolidationConstraints:
     min_volume_utilization: float = 0.30  # 30% minimum
 
     # Maximum acceptable utilization (safety margin)
-    max_weight_utilization: float = 0.95  # 95% maximum
-    max_volume_utilization: float = 0.95  # 95% maximum
+    # Allow exact-capacity matches by default (100%)
+    max_weight_utilization: float = 1.0  # 100% maximum
+    max_volume_utilization: float = 1.0  # 100% maximum
 
     # Consolidation preferences
     prefer_same_destination: bool = True  # Prefer single-destination routes
@@ -53,7 +54,9 @@ class ConsolidationConstraints:
 
     # Priority handling
     allow_priority_mixing: bool = True  # Can mix priorities
-    max_priority_difference: int = 1  # Maximum priority gap (0=normal, 1=high, 2=urgent)
+    max_priority_difference: int = (
+        1  # Maximum priority gap (0=normal, 1=high, 2=urgent)
+    )
 
     # Route efficiency
     max_detour_ratio: float = 1.3  # Route can be max 30% longer than direct
@@ -63,7 +66,9 @@ class ConsolidationConstraints:
     time_window_buffer_minutes: int = 15  # Safety buffer for time windows
 
     # Cost efficiency
-    min_cost_savings_for_consolidation: float = 500.0  # KES - minimum savings to consolidate
+    min_cost_savings_for_consolidation: float = (
+        500.0  # KES - minimum savings to consolidate
+    )
 
 
 class ConsolidationValidator:
@@ -102,16 +107,16 @@ class ConsolidationValidator:
             reasoning_parts.append(util_reason)
 
         # 2. Check cargo compatibility
-        compat_valid, compat_violations, compat_reason = self._check_cargo_compatibility(
-            route_orders
+        compat_valid, compat_violations, compat_reason = (
+            self._check_cargo_compatibility(route_orders)
         )
         if not compat_valid:
             violations.extend(compat_violations)
             reasoning_parts.append(compat_reason)
 
         # 3. Check priority mixing
-        priority_valid, priority_violations, priority_reason = self._check_priority_mixing(
-            route_orders
+        priority_valid, priority_violations, priority_reason = (
+            self._check_priority_mixing(route_orders)
         )
         if not priority_valid:
             violations.extend(priority_violations)
@@ -126,7 +131,11 @@ class ConsolidationValidator:
             reasoning_parts.append(dest_reason)
 
         is_valid = len(violations) == 0
-        reasoning = " | ".join(reasoning_parts) if reasoning_parts else "All constraints satisfied"
+        reasoning = (
+            " | ".join(reasoning_parts)
+            if reasoning_parts
+            else "All constraints satisfied"
+        )
 
         return is_valid, violations, reasoning
 
@@ -153,7 +162,7 @@ class ConsolidationValidator:
                 False,
                 violations,
                 f"Weight utilization {weight_util:.1%} below minimum {self.constraints.min_weight_utilization:.1%} "
-                f"({total_weight:.1f}T / {vehicle.capacity_weight_tonnes:.1f}T on {vehicle.vehicle_type} truck)"
+                f"({total_weight:.1f}T / {vehicle.capacity_weight_tonnes:.1f}T on {vehicle.vehicle_type} truck)",
             )
 
         if volume_util < self.constraints.min_volume_utilization:
@@ -162,7 +171,7 @@ class ConsolidationValidator:
                 False,
                 violations,
                 f"Volume utilization {volume_util:.1%} below minimum {self.constraints.min_volume_utilization:.1%} "
-                f"({total_volume:.1f}m³ / {vehicle.capacity_volume_m3:.1f}m³ on {vehicle.vehicle_type} truck)"
+                f"({total_volume:.1f}m³ / {vehicle.capacity_volume_m3:.1f}m³ on {vehicle.vehicle_type} truck)",
             )
 
         # Check maximum utilization (safety)
@@ -171,7 +180,7 @@ class ConsolidationValidator:
             return (
                 False,
                 violations,
-                f"Weight utilization {weight_util:.1%} exceeds safe maximum {self.constraints.max_weight_utilization:.1%}"
+                f"Weight utilization {weight_util:.1%} exceeds safe maximum {self.constraints.max_weight_utilization:.1%}",
             )
 
         if volume_util > self.constraints.max_volume_utilization:
@@ -179,7 +188,7 @@ class ConsolidationValidator:
             return (
                 False,
                 violations,
-                f"Volume utilization {volume_util:.1%} exceeds safe maximum {self.constraints.max_volume_utilization:.1%}"
+                f"Volume utilization {volume_util:.1%} exceeds safe maximum {self.constraints.max_volume_utilization:.1%}",
             )
 
         return True, [], ""
@@ -202,18 +211,14 @@ class ConsolidationValidator:
                 return (
                     False,
                     violations,
-                    "Fresh food requires dedicated vehicle (cannot mix with other cargo)"
+                    "Fresh food requires dedicated vehicle (cannot mix with other cargo)",
                 )
 
         # Hazardous mixing rules
         if has_hazardous and len(orders) > 1:
             if not self.constraints.allow_hazardous_mixing:
                 violations.append(ConsolidationViolation.INCOMPATIBLE_CARGO)
-                return (
-                    False,
-                    violations,
-                    "Hazardous cargo requires dedicated vehicle"
-                )
+                return (False, violations, "Hazardous cargo requires dedicated vehicle")
 
         # Fragile + heavy cargo check
         if has_fragile and not self.constraints.allow_fragile_mixing:
@@ -223,7 +228,7 @@ class ConsolidationValidator:
                 return (
                     False,
                     violations,
-                    "Fragile cargo cannot be mixed with heavy loads"
+                    "Fragile cargo cannot be mixed with heavy loads",
                 )
 
         return True, [], ""
@@ -247,7 +252,7 @@ class ConsolidationValidator:
                 False,
                 violations,
                 f"Priority difference ({priority_diff}) exceeds maximum ({self.constraints.max_priority_difference}). "
-                f"Cannot mix urgent/high priority with normal priority orders."
+                f"Cannot mix urgent/high priority with normal priority orders.",
             )
 
         return True, [], ""
@@ -265,7 +270,7 @@ class ConsolidationValidator:
             return (
                 False,
                 violations,
-                f"Route has {num_destinations} destinations, exceeds maximum {self.constraints.max_destinations_per_route}"
+                f"Route has {num_destinations} destinations, exceeds maximum {self.constraints.max_destinations_per_route}",
             )
 
         return True, [], ""
@@ -283,7 +288,10 @@ class ConsolidationValidator:
         """
         # Need minimum orders
         if len(orders) < self.constraints.min_orders_for_consolidation:
-            return False, f"Only {len(orders)} order(s), need minimum {self.constraints.min_orders_for_consolidation} for consolidation"
+            return (
+                False,
+                f"Only {len(orders)} order(s), need minimum {self.constraints.min_orders_for_consolidation} for consolidation",
+            )
 
         # Check cost savings
         cost_savings = estimated_single_cost - estimated_consolidated_cost
@@ -291,10 +299,13 @@ class ConsolidationValidator:
         if cost_savings < self.constraints.min_cost_savings_for_consolidation:
             return (
                 False,
-                f"Cost savings ({cost_savings:.0f} KES) below minimum threshold ({self.constraints.min_cost_savings_for_consolidation:.0f} KES)"
+                f"Cost savings ({cost_savings:.0f} KES) below minimum threshold ({self.constraints.min_cost_savings_for_consolidation:.0f} KES)",
             )
 
-        return True, f"Consolidation saves {cost_savings:.0f} KES with {len(orders)} orders"
+        return (
+            True,
+            f"Consolidation saves {cost_savings:.0f} KES with {len(orders)} orders",
+        )
 
     def get_optimal_vehicle_for_load(
         self,
@@ -352,9 +363,15 @@ def get_consolidation_opportunities(
 
         # Add special handling to group key if strict separation required
         if order.special_handling:
-            if "fresh_food" in order.special_handling and not constraints.allow_fresh_food_mixing:
+            if (
+                "fresh_food" in order.special_handling
+                and not constraints.allow_fresh_food_mixing
+            ):
                 group_key += "_fresh"
-            if "hazardous" in order.special_handling and not constraints.allow_hazardous_mixing:
+            if (
+                "hazardous" in order.special_handling
+                and not constraints.allow_hazardous_mixing
+            ):
                 group_key += "_hazardous"
 
         # Add priority to group key if strict separation required
@@ -369,7 +386,8 @@ def get_consolidation_opportunities(
     # Filter out single-order groups if consolidation requires minimum
     if constraints.min_orders_for_consolidation > 1:
         groups = {
-            k: v for k, v in groups.items()
+            k: v
+            for k, v in groups.items()
             if len(v) >= constraints.min_orders_for_consolidation
         }
 

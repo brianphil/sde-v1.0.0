@@ -1,6 +1,6 @@
 """Regularization and validation for preventing overfitting in learning.
 
-This module implements world-class regularization techniques and validation strategies:
+This module implements sde regularization techniques and validation strategies:
 
 - L1/L2 regularization (Lasso/Ridge)
 - Dropout for neural networks
@@ -68,7 +68,7 @@ class EarlyStopping:
         self.min_delta = min_delta
         self.restore_best_weights = restore_best_weights
 
-        self.best_loss = float('inf')
+        self.best_loss = float("inf")
         self.best_weights: Optional[Dict[str, Any]] = None
         self.wait = 0
         self.stopped_epoch = 0
@@ -78,7 +78,7 @@ class EarlyStopping:
         self,
         val_loss: float,
         epoch: int,
-        model_weights: Optional[Dict[str, Any]] = None
+        model_weights: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """Check if training should stop.
 
@@ -140,7 +140,7 @@ class L2Regularizer:
         Returns:
             Regularization penalty
         """
-        return self.lambda_ * sum(w ** 2 for w in weights)
+        return self.lambda_ * sum(w**2 for w in weights)
 
     def compute_gradient(self, weights: List[float]) -> List[float]:
         """Compute gradient of L2 penalty.
@@ -303,7 +303,7 @@ class GradientClipper:
         """
         if self.clip_type == "norm":
             # Clip by global norm
-            norm = math.sqrt(sum(g ** 2 for g in gradients))
+            norm = math.sqrt(sum(g**2 for g in gradients))
             if norm > self.clip_value:
                 scale = self.clip_value / (norm + 1e-8)
                 return [g * scale for g in gradients]
@@ -311,10 +311,7 @@ class GradientClipper:
 
         elif self.clip_type == "value":
             # Clip by value
-            return [
-                max(-self.clip_value, min(self.clip_value, g))
-                for g in gradients
-            ]
+            return [max(-self.clip_value, min(self.clip_value, g)) for g in gradients]
 
         else:
             raise ValueError(f"Unknown clip type: {self.clip_type}")
@@ -462,7 +459,7 @@ class OverfittingDetector:
         if len(self.metrics_history) < self.window_size:
             return False
 
-        recent_metrics = self.metrics_history[-self.window_size:]
+        recent_metrics = self.metrics_history[-self.window_size :]
 
         # Check 1: Validation loss increasing
         val_losses = [m.val_loss for m in recent_metrics]
@@ -475,13 +472,19 @@ class OverfittingDetector:
                 # Check if train loss decreased
                 train_losses = [m.train_loss for m in recent_metrics[-3:]]
                 if train_losses[-1] < train_losses[0]:
-                    logger.warning("Overfitting detected: Val loss increasing, train loss decreasing")
+                    logger.warning(
+                        "Overfitting detected: Val loss increasing, train loss decreasing"
+                    )
                     return True
 
         # Check 2: Large train/val gap
-        avg_overfit_score = statistics.mean(m.overfitting_score() for m in recent_metrics)
+        avg_overfit_score = statistics.mean(
+            m.overfitting_score() for m in recent_metrics
+        )
         if avg_overfit_score > self.overfitting_threshold:
-            logger.warning(f"Overfitting detected: Train/val gap = {avg_overfit_score:.2%}")
+            logger.warning(
+                f"Overfitting detected: Train/val gap = {avg_overfit_score:.2%}"
+            )
             return True
 
         # Check 3: High variance in validation loss
@@ -489,7 +492,9 @@ class OverfittingDetector:
             val_std = statistics.stdev(val_losses)
             val_mean = statistics.mean(val_losses)
             if val_mean > 0 and val_std / val_mean > 0.2:  # CV > 20%
-                logger.warning(f"High variance in validation loss: CV = {val_std/val_mean:.2%}")
+                logger.warning(
+                    f"High variance in validation loss: CV = {val_std/val_mean:.2%}"
+                )
 
         return False
 
@@ -502,7 +507,7 @@ class OverfittingDetector:
         if not self.metrics_history:
             return 0.0
 
-        recent = self.metrics_history[-self.window_size:]
+        recent = self.metrics_history[-self.window_size :]
         return statistics.mean(m.overfitting_score() for m in recent)
 
 
@@ -532,7 +537,9 @@ class RegularizationCoordinator:
         # Regularizers
         self.l2_regularizer = L2Regularizer(lambda_=l2_lambda)
         self.dropout = DropoutRegularizer(dropout_rate=dropout_rate)
-        self.gradient_clipper = GradientClipper(clip_type="norm", clip_value=gradient_clip_value)
+        self.gradient_clipper = GradientClipper(
+            clip_type="norm", clip_value=gradient_clip_value
+        )
 
         # Validation
         self.early_stopping = EarlyStopping(patience=early_stopping_patience)
@@ -565,9 +572,7 @@ class RegularizationCoordinator:
         reg_gradients = self.l2_regularizer.compute_gradient(weights)
 
         # Add regularization to gradients
-        regularized_gradients = [
-            g + rg for g, rg in zip(gradients, reg_gradients)
-        ]
+        regularized_gradients = [g + rg for g, rg in zip(gradients, reg_gradients)]
 
         # Clip gradients
         clipped_gradients = self.gradient_clipper.clip(regularized_gradients)
